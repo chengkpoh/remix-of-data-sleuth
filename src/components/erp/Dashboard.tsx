@@ -25,7 +25,7 @@ const FREE_COLOR = "#3b82f6"; // blue
 
 type MaintLogEntry = MaintenanceProgress & { ts: number };
 
-export function Dashboard() {
+export function Dashboard({ dark }: { dark: boolean }) {
   const [info, setInfo] = useState<ServerInfo | null>(null);
   const [size, setSize] = useState<DatabaseSize | null>(null);
   const [loading, setLoading] = useState(false);
@@ -161,6 +161,8 @@ export function Dashboard() {
                   <Tooltip
                     formatter={(v: number) => `${v.toFixed(2)} MB`}
                     contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", fontSize: 12 }}
+                    itemStyle={{ color: dark ? "#ffffff" : "#000000" }}
+                    labelStyle={{ color: dark ? "#ffffff" : "#000000" }}
                   />
                 </PieChart>
               </ResponsiveContainer>
