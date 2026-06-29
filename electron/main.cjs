@@ -242,12 +242,21 @@ function registerIpc(mainWindow) {
   // ---------------- Dashboard: database storage ----------------
   ipcMain.handle("erp:getDatabaseSize", async () => {
     if (!pool) throw new Error("Not connected");
+    // Allocation-based calculation (accurate in Azure SQL Database / Elastic Pool,
+    // where sys.database_files reports pool-level sizes, not per-DB usage).
     const r = await pool.request().query(`
+      ;WITH alloc AS (
+        SELECT SUM(a.total_pages) AS total_pages,
+               SUM(a.used_pages)  AS used_pages
+        FROM sys.tables t
+        JOIN sys.indexes i           ON i.object_id = t.object_id
+        JOIN sys.partitions p        ON p.object_id = i.object_id AND p.index_id = i.index_id
+        JOIN sys.allocation_units a  ON a.container_id = p.partition_id
+      )
       SELECT
-        SUM(CAST(size AS bigint)) * 8.0 / 1024 AS TotalMB,
-        SUM(CAST(FILEPROPERTY(name, 'SpaceUsed') AS bigint)) * 8.0 / 1024 AS UsedMB
-      FROM sys.database_files
-      WHERE type_desc IN ('ROWS','LOG')
+        CAST(ISNULL(total_pages,0) * 8.0 / 1024 AS float) AS TotalMB,
+        CAST(ISNULL(used_pages, 0) * 8.0 / 1024 AS float) AS UsedMB
+      FROM alloc
     `);
     const row = r.recordset[0] || { TotalMB: 0, UsedMB: 0 };
     const totalMB = Number(row.TotalMB) || 0;
@@ -255,6 +264,7 @@ function registerIpc(mainWindow) {
     const freeMB  = Math.max(0, totalMB - usedMB);
     return { totalMB, usedMB, freeMB };
   });
+
 
   // ---------------- Maintenance: shrink ----------------
   ipcMain.handle("erp:shrinkDatabase", async () => {
