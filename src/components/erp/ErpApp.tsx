@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Database, Loader2, Plug, PlugZap, Search, X, Download, FileSpreadsheet,
   Table as TableIcon, Eye, AlertTriangle, CheckCircle2, Moon, Sun, StopCircle,
-  LayoutDashboard, Wrench,
+  LayoutDashboard, Wrench, ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,9 +31,10 @@ import {
 } from "@/lib/erp/types";
 import { Dashboard } from "./Dashboard";
 import { SchemaManager } from "./SchemaManager";
+import { DataHealthChecker } from "./DataHealthChecker";
 
 type Phase = "disconnected" | "connecting" | "connected";
-type View = "dashboard" | "search" | "schema";
+type View = "dashboard" | "search" | "schema" | "health";
 
 const DEFAULT_CFG: ConnectionConfig = {
   server: "localhost",
@@ -84,6 +85,8 @@ export function ErpApp() {
         <Dashboard dark={dark} />
       ) : view === "schema" ? (
         <SchemaManager schema={schema!} dark={dark} />
+      ) : view === "health" ? (
+        <DataHealthChecker schema={schema!} dark={dark} />
       ) : (
         <Workspace schema={schema!} cfg={cfg} />
       )}
@@ -134,6 +137,12 @@ function TopBar(props: {
               className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition ${view === "schema" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
             >
               <Wrench className="h-3.5 w-3.5" /> Schema Manager
+            </button>
+            <button
+              onClick={() => onViewChange("health")}
+              className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition ${view === "health" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              <ShieldCheck className="h-3.5 w-3.5" /> Data Health Checker
             </button>
           </nav>
         )}
