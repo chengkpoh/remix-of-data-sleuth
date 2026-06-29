@@ -82,6 +82,8 @@ export function ErpApp() {
         />
       ) : view === "dashboard" ? (
         <Dashboard dark={dark} />
+      ) : view === "schema" ? (
+        <SchemaManager schema={schema!} dark={dark} />
       ) : (
         <Workspace schema={schema!} cfg={cfg} />
       )}
