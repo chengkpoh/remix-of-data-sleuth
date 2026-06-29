@@ -85,6 +85,8 @@ export function ErpApp() {
         <Dashboard dark={dark} />
       ) : view === "schema" ? (
         <SchemaManager schema={schema!} dark={dark} />
+      ) : view === "health" ? (
+        <DataHealthChecker schema={schema!} dark={dark} />
       ) : (
         <Workspace schema={schema!} cfg={cfg} />
       )}
