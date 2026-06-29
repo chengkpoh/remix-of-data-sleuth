@@ -84,7 +84,45 @@ export interface ErpApi {
   }>;
   cancelMaintenance: () => Promise<{ ok: boolean }>;
   onMaintenanceProgress: (cb: (p: MaintenanceProgress) => void) => () => void;
+  getTableColumns: (p: { schema: string; table: string }) => Promise<TableColumnInfo[]>;
+  getColumnDependencies: (p: { schema: string; table: string; column: string }) => Promise<ColumnDependencies>;
+  executeAlterStatements: (p: { statements: string[] }) => Promise<{
+    ok: boolean;
+    error?: string;
+    executed: string[];
+  }>;
 }
+
+export interface TableColumnInfo {
+  columnName: string;
+  dataType: string;
+  charMaxLength: number | null;
+  numericPrecision: number | null;
+  numericScale: number | null;
+  isNullable: "YES" | "NO";
+  ordinal: number;
+  isPrimaryKey: boolean;
+  fkRefSchema: string | null;
+  fkRefTable: string | null;
+  fkRefColumn: string | null;
+}
+
+export interface ColumnDependencies {
+  foreignKeys: Array<{
+    fkName: string;
+    parentSchema: string;
+    parentTable: string;
+    parentColumn: string;
+    refSchema: string;
+    refTable: string;
+    refColumn: string;
+  }>;
+  indexes: Array<{
+    indexName: string;
+    isPrimaryKey: boolean;
+    isUniqueConstraint: boolean;
+    indexType: string;
+  }>;
 
 export interface ServerInfo {
   ServerName?: string;
