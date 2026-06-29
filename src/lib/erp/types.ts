@@ -91,7 +91,35 @@ export interface ErpApi {
     error?: string;
     executed: string[];
   }>;
+  runHealthCheck: (p?: { schema?: string; table?: string; maxPerColumn?: number }) => Promise<HealthCheckResult>;
+  cancelHealthCheck: () => Promise<{ ok: boolean }>;
+  onHealthCheckProgress: (cb: (p: HealthCheckProgress) => void) => () => void;
 }
+
+export interface HealthCheckViolation {
+  schema: string;
+  table: string;
+  column: string;
+  dataType: string;
+  allowedLength: number;
+  actualLength: number;
+  recordId: string;
+  primaryKey: string;
+}
+
+export interface HealthCheckResult {
+  violations: HealthCheckViolation[];
+  scanned: number;
+  total: number;
+  aborted: boolean;
+  durationMs: number;
+}
+
+export interface HealthCheckProgress {
+  index: number;
+  total: number;
+  currentTable: string;
+  warning?: string;
 
 export interface TableColumnInfo {
   columnName: string;
