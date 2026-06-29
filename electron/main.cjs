@@ -378,6 +378,141 @@ function registerIpc(mainWindow) {
     currentMaintAbort = null;
     return { total, processed, aborted, durationMs: Date.now() - startedAt };
   });
+
+  // ---------------- Schema Manager: list table columns ----------------
+  ipcMain.handle("erp:getTableColumns", async (_e, { schema, table }) => {
+    if (!pool) throw new Error("Not connected");
+    const r = await pool.request()
+      .input("schema", schema)
+      .input("table", table)
+      .query(`
+        SELECT
+          c.COLUMN_NAME           AS columnName,
+          c.DATA_TYPE             AS dataType,
+          c.CHARACTER_MAXIMUM_LENGTH AS charMaxLength,
+          c.NUMERIC_PRECISION     AS numericPrecision,
+          c.NUMERIC_SCALE         AS numericScale,
+          c.IS_NULLABLE           AS isNullable,
+          c.ORDINAL_POSITION      AS ordinal,
+          CAST(CASE WHEN pk.COLUMN_NAME IS NOT NULL THEN 1 ELSE 0 END AS bit) AS isPrimaryKey,
+          fk.ref_schema           AS fkRefSchema,
+          fk.ref_table            AS fkRefTable,
+          fk.ref_column           AS fkRefColumn
+        FROM INFORMATION_SCHEMA.COLUMNS c
+        LEFT JOIN (
+          SELECT kcu.TABLE_SCHEMA, kcu.TABLE_NAME, kcu.COLUMN_NAME
+          FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+          JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+            ON tc.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
+           AND tc.TABLE_SCHEMA   = kcu.TABLE_SCHEMA
+          WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+        ) pk
+          ON pk.TABLE_SCHEMA = c.TABLE_SCHEMA
+         AND pk.TABLE_NAME   = c.TABLE_NAME
+         AND pk.COLUMN_NAME  = c.COLUMN_NAME
+        LEFT JOIN (
+          SELECT
+            ps.name      AS parent_schema,
+            pt.name      AS parent_table,
+            pc.name      AS parent_column,
+            rs.name      AS ref_schema,
+            rt.name      AS ref_table,
+            rc.name      AS ref_column
+          FROM sys.foreign_key_columns fkc
+          JOIN sys.tables   pt ON pt.object_id = fkc.parent_object_id
+          JOIN sys.schemas  ps ON ps.schema_id = pt.schema_id
+          JOIN sys.columns  pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id
+          JOIN sys.tables   rt ON rt.object_id = fkc.referenced_object_id
+          JOIN sys.schemas  rs ON rs.schema_id = rt.schema_id
+          JOIN sys.columns  rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+        ) fk
+          ON fk.parent_schema = c.TABLE_SCHEMA
+         AND fk.parent_table  = c.TABLE_NAME
+         AND fk.parent_column = c.COLUMN_NAME
+        WHERE c.TABLE_SCHEMA = @schema AND c.TABLE_NAME = @table
+        ORDER BY c.ORDINAL_POSITION
+      `);
+    return r.recordset;
+  });
+
+  // ---------------- Schema Manager: column dependencies ----------------
+  ipcMain.handle("erp:getColumnDependencies", async (_e, { schema, table, column }) => {
+    if (!pool) throw new Error("Not connected");
+    const req = pool.request()
+      .input("schema", schema)
+      .input("table", table)
+      .input("column", column);
+
+    const fkOut = await req.query(`
+      SELECT
+        fk.name AS fkName,
+        OBJECT_SCHEMA_NAME(fkc.parent_object_id) AS parentSchema,
+        OBJECT_NAME(fkc.parent_object_id) AS parentTable,
+        pc.name AS parentColumn,
+        OBJECT_SCHEMA_NAME(fkc.referenced_object_id) AS refSchema,
+        OBJECT_NAME(fkc.referenced_object_id) AS refTable,
+        rc.name AS refColumn
+      FROM sys.foreign_keys fk
+      JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+      JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id
+      JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+      WHERE
+        (OBJECT_SCHEMA_NAME(fkc.parent_object_id) = @schema
+         AND OBJECT_NAME(fkc.parent_object_id) = @table
+         AND pc.name = @column)
+        OR
+        (OBJECT_SCHEMA_NAME(fkc.referenced_object_id) = @schema
+         AND OBJECT_NAME(fkc.referenced_object_id) = @table
+         AND rc.name = @column)
+    `);
+
+    const idxOut = await pool.request()
+      .input("schema", schema)
+      .input("table", table)
+      .input("column", column)
+      .query(`
+        SELECT
+          i.name AS indexName,
+          i.is_primary_key AS isPrimaryKey,
+          i.is_unique_constraint AS isUniqueConstraint,
+          i.type_desc AS indexType
+        FROM sys.indexes i
+        JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+        JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+        JOIN sys.tables t ON t.object_id = i.object_id
+        JOIN sys.schemas s ON s.schema_id = t.schema_id
+        WHERE s.name = @schema AND t.name = @table AND c.name = @column
+      `);
+
+    return { foreignKeys: fkOut.recordset, indexes: idxOut.recordset };
+  });
+
+  // ---------------- Schema Manager: execute ALTER batch ----------------
+  ipcMain.handle("erp:executeAlterStatements", async (_e, { statements }) => {
+    if (!pool) throw new Error("Not connected");
+    if (!Array.isArray(statements) || !statements.length) {
+      return { ok: false, error: "No statements provided", executed: [] };
+    }
+    const mssql = getSql();
+    const tx = new mssql.Transaction(pool);
+    const executed = [];
+    try {
+      await tx.begin();
+      for (const stmt of statements) {
+        await new mssql.Request(tx).query(stmt);
+        executed.push(stmt);
+      }
+      await tx.commit();
+      return { ok: true, executed };
+    } catch (err) {
+      try { await tx.rollback(); } catch {}
+      return {
+        ok: false,
+        error: String(err && err.message ? err.message : err),
+        executed,
+      };
+    }
+  });
 }
 
 function createWindow() {
