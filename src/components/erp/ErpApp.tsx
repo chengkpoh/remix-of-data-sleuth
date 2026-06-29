@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Database, Loader2, Plug, PlugZap, Search, X, Download, FileSpreadsheet,
   Table as TableIcon, Eye, AlertTriangle, CheckCircle2, Moon, Sun, StopCircle,
-  LayoutDashboard, Wrench,
+  LayoutDashboard, Wrench, ShieldCheck,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
