@@ -80,7 +80,7 @@ export function ErpApp() {
           setPhase={setPhase}
         />
       ) : view === "dashboard" ? (
-        <Dashboard />
+        <Dashboard dark={dark} />
       ) : (
         <Workspace schema={schema!} cfg={cfg} />
       )}
