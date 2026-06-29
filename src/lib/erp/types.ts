@@ -123,6 +123,9 @@ export interface ColumnDependencies {
     isUniqueConstraint: boolean;
     indexType: string;
   }>;
+}
+
+
 
 export interface ServerInfo {
   ServerName?: string;
