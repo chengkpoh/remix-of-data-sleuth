@@ -371,6 +371,7 @@ function registerIpc(mainWindow) {
 }
 
 function createWindow() {
+  const fs = require("fs");
   const win = new BrowserWindow({
     width: 1400,
     height: 900,
@@ -382,14 +383,64 @@ function createWindow() {
     },
   });
 
+  // Diagnostics: log every load failure and open DevTools so the user can see them.
+  win.webContents.on("did-fail-load", (_e, errorCode, errorDesc, validatedURL) => {
+    console.error("[electron] did-fail-load", { errorCode, errorDesc, validatedURL });
+    try { win.webContents.openDevTools({ mode: "detach" }); } catch {}
+  });
+  win.webContents.on("preload-error", (_e, preloadPath, error) => {
+    console.error("[electron] preload-error", preloadPath, error);
+  });
+  win.webContents.on("render-process-gone", (_e, details) => {
+    console.error("[electron] renderer gone:", details);
+  });
+
   const devUrl = process.env.ELECTRON_DEV_URL || "http://localhost:8080";
+  const candidates = [
+    path.join(__dirname, "..", "dist", "index.html"),
+    path.join(__dirname, "..", "dist", "client", "index.html"),
+  ];
+  const indexPath = candidates.find((p) => fs.existsSync(p));
+
+  console.log("[electron] ELECTRON_DEV =", process.env.ELECTRON_DEV);
+  console.log("[electron] __dirname =", __dirname);
+  console.log("[electron] candidates =", candidates);
+  console.log("[electron] resolved indexPath =", indexPath);
+
   if (process.env.ELECTRON_DEV === "1") {
     win.loadURL(devUrl);
+  } else if (indexPath) {
+    win.loadFile(indexPath).catch((err) => {
+      console.error("[electron] loadFile failed:", err);
+      showLoadError(win, `loadFile failed for ${indexPath}: ${err && err.message}`);
+    });
   } else {
-    const indexPath = path.join(__dirname, "..", "dist", "index.html");
-    win.loadFile(indexPath).catch(() => win.loadURL(devUrl));
+    const msg =
+      "No index.html was produced by the build.\n\n" +
+      "This project is TanStack Start (SSR via Nitro), so `vite build` outputs a server bundle in dist/server/ and JS/CSS chunks in dist/client/, but NOT a static dist/index.html.\n\n" +
+      "Electron's file:// loader has nothing to load, which is why the window is blank and SQL never connects (the React UI never renders, so the IPC bridge is never called).\n\n" +
+      "Fix options:\n" +
+      "  1) Switch to a SPA/prerender build so dist/index.html is emitted.\n" +
+      "  2) Bundle a Node SSR server inside Electron and loadURL(http://127.0.0.1:<port>).";
+    console.error("[electron] " + msg);
+    showLoadError(win, msg);
   }
   registerIpc(win);
+}
+
+function showLoadError(win, message) {
+  const html =
+    "data:text/html;charset=utf-8," +
+    encodeURIComponent(
+      `<!doctype html><html><body style="background:#0b1220;color:#e5e7eb;font:14px/1.5 system-ui;padding:24px">
+        <h2 style="color:#f87171;margin:0 0 12px">ERP Data Finder failed to load the UI</h2>
+        <pre style="white-space:pre-wrap;background:#111827;padding:16px;border-radius:8px">${message
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")}</pre>
+      </body></html>`,
+    );
+  win.loadURL(html);
+  try { win.webContents.openDevTools({ mode: "detach" }); } catch {}
 }
 
 app.whenReady().then(createWindow);
