@@ -31,9 +31,10 @@ import {
 } from "@/lib/erp/types";
 import { Dashboard } from "./Dashboard";
 import { SchemaManager } from "./SchemaManager";
+import { DataHealthChecker } from "./DataHealthChecker";
 
 type Phase = "disconnected" | "connecting" | "connected";
-type View = "dashboard" | "search" | "schema";
+type View = "dashboard" | "search" | "schema" | "health";
 
 const DEFAULT_CFG: ConnectionConfig = {
   server: "localhost",
