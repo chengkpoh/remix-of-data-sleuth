@@ -19,8 +19,9 @@ import type {
   ServerInfo, DatabaseSize, MaintenanceProgress,
 } from "@/lib/erp/types";
 
-const USED_COLOR = "hsl(var(--primary))";
-const FREE_COLOR = "hsl(var(--muted-foreground) / 0.35)";
+const USED_COLOR = "#eab308"; // yellow
+const FREE_COLOR = "#3b82f6"; // blue
+
 
 type MaintLogEntry = MaintenanceProgress & { ts: number };
 
