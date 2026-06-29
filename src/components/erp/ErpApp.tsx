@@ -138,6 +138,12 @@ function TopBar(props: {
             >
               <Wrench className="h-3.5 w-3.5" /> Schema Manager
             </button>
+            <button
+              onClick={() => onViewChange("health")}
+              className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition ${view === "health" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              <ShieldCheck className="h-3.5 w-3.5" /> Data Health Checker
+            </button>
           </nav>
         )}
       </div>
