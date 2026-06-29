@@ -30,9 +30,10 @@ import {
   type SearchResultRow, type TableInfo,
 } from "@/lib/erp/types";
 import { Dashboard } from "./Dashboard";
+import { SchemaManager } from "./SchemaManager";
 
 type Phase = "disconnected" | "connecting" | "connected";
-type View = "dashboard" | "search";
+type View = "dashboard" | "search" | "schema";
 
 const DEFAULT_CFG: ConnectionConfig = {
   server: "localhost",
