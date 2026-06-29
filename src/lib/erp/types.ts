@@ -120,6 +120,8 @@ export interface HealthCheckProgress {
   total: number;
   currentTable: string;
   warning?: string;
+}
+
 
 export interface TableColumnInfo {
   columnName: string;
