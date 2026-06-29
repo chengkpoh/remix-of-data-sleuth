@@ -11,7 +11,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "electron": "electron .",
-    "electron:dev": "concurrently -k \"vite dev --config vite.electron.config.ts --port 8080\" \"wait-on http://localhost:8080 && electron .\"",
+    "electron:dev": "concurrently -k \"vite dev --config vite.electron.config.ts --port 8080\" \"wait-on http://localhost:8080 && cross-env ELECTRON_DEV=1 ELECTRON_DEV_URL=http://localhost:8080 electron .\"",
     "electron:build": "vite build --config vite.electron.config.ts",
     "electron:pack": "npm run electron:build && npx electron-packager . ERPDataFinder --overwrite --out=electron-release --ignore='^/electron-release'",
     "electron:build:win": "npm run electron:build && electron-builder --win --x64",
@@ -36,7 +36,10 @@
     "asar": true,
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
       ],
       "artifactName": "ERPDataFinder-Setup-${version}.${ext}"
     },
@@ -113,6 +116,7 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.2.0",
+    "cross-env": "^10.1.0",
     "eslint": "^9.32.0",
     "eslint-config-prettier": "^10.1.1",
     "eslint-plugin-prettier": "^5.2.6",
