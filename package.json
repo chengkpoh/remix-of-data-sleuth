@@ -11,10 +11,11 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "electron": "electron .",
-    "electron:dev": "concurrently -k \"vite dev\" \"wait-on http://localhost:8080 && electron .\"",
-    "electron:pack": "vite build && npx electron-packager . ERPDataFinder --overwrite --out=electron-release --ignore='^/electron-release'",
-    "electron:build:win": "vite build && electron-builder --win --x64",
-    "electron:build:win:portable": "vite build && electron-builder --win portable --x64"
+    "electron:dev": "concurrently -k \"vite dev --config vite.electron.config.ts --port 8080\" \"wait-on http://localhost:8080 && electron .\"",
+    "electron:build": "vite build --config vite.electron.config.ts",
+    "electron:pack": "npm run electron:build && npx electron-packager . ERPDataFinder --overwrite --out=electron-release --ignore='^/electron-release'",
+    "electron:build:win": "npm run electron:build && electron-builder --win --x64",
+    "electron:build:win:portable": "npm run electron:build && electron-builder --win portable --x64"
   },
   "main": "electron/main.cjs",
   "build": {
