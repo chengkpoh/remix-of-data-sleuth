@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Database, Loader2, Plug, PlugZap, Search, X, Download, FileSpreadsheet,
   Table as TableIcon, Eye, AlertTriangle, CheckCircle2, Moon, Sun, StopCircle,
-  LayoutDashboard,
+  LayoutDashboard, Wrench,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,9 +30,10 @@ import {
   type SearchResultRow, type TableInfo,
 } from "@/lib/erp/types";
 import { Dashboard } from "./Dashboard";
+import { SchemaManager } from "./SchemaManager";
 
 type Phase = "disconnected" | "connecting" | "connected";
-type View = "dashboard" | "search";
+type View = "dashboard" | "search" | "schema";
 
 const DEFAULT_CFG: ConnectionConfig = {
   server: "localhost",
@@ -81,6 +82,8 @@ export function ErpApp() {
         />
       ) : view === "dashboard" ? (
         <Dashboard dark={dark} />
+      ) : view === "schema" ? (
+        <SchemaManager schema={schema!} dark={dark} />
       ) : (
         <Workspace schema={schema!} cfg={cfg} />
       )}
@@ -125,6 +128,12 @@ function TopBar(props: {
               className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition ${view === "search" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
             >
               <Search className="h-3.5 w-3.5" /> Data Finder
+            </button>
+            <button
+              onClick={() => onViewChange("schema")}
+              className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition ${view === "schema" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              <Wrench className="h-3.5 w-3.5" /> Schema Manager
             </button>
           </nav>
         )}

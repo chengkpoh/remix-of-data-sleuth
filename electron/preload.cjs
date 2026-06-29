@@ -24,5 +24,7 @@ contextBridge.exposeInMainWorld("erp", {
     const listener = (_e, data) => cb(data);
     ipcRenderer.on("erp:maintenanceProgress", listener);
     return () => ipcRenderer.removeListener("erp:maintenanceProgress", listener);
-  },
+  getTableColumns: (params) => ipcRenderer.invoke("erp:getTableColumns", params),
+  getColumnDependencies: (params) => ipcRenderer.invoke("erp:getColumnDependencies", params),
+  executeAlterStatements: (params) => ipcRenderer.invoke("erp:executeAlterStatements", params),
 });
