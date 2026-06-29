@@ -1,0 +1,133 @@
+export interface ConnectionConfig {
+  server: string;
+  database: string;
+  user: string;
+  password: string;
+  port?: number;
+  encrypt?: boolean;
+}
+
+export interface TableInfo {
+  schema: string;
+  name: string;
+}
+
+export interface ColumnInfo {
+  schema: string;
+  table: string;
+  column: string;
+  type: string;
+}
+
+export interface SchemaSnapshot {
+  tables: TableInfo[];
+  columns: ColumnInfo[];
+  fetchedAt: number;
+}
+
+export type SearchMode = "contains" | "starts" | "exact";
+
+export interface SearchParams {
+  value: string;
+  mode: SearchMode;
+  maxResults: number;
+  selectedTables: TableInfo[];
+  allowedTypes: string[];
+}
+
+export interface SearchResultRow {
+  schema: string;
+  table: string;
+  column: string;
+  dataType: string;
+  value: string;
+  row: Record<string, unknown>;
+}
+
+export interface SearchResponse {
+  results: SearchResultRow[];
+  scanned: number;
+  total: number;
+  durationMs?: number;
+  aborted?: boolean;
+}
+
+export interface SearchProgress {
+  scanned: number;
+  total: number;
+  currentTable: string;
+  warning?: string;
+}
+
+export interface ErpApi {
+  isElectron: boolean;
+  test: (cfg: ConnectionConfig) => Promise<{ ok: boolean; error?: string }>;
+  connect: (cfg: ConnectionConfig) => Promise<{ ok: boolean; schema: SchemaSnapshot }>;
+  disconnect: () => Promise<{ ok: boolean }>;
+  getSchema: () => Promise<SchemaSnapshot>;
+  search: (params: SearchParams) => Promise<SearchResponse>;
+  cancelSearch: () => Promise<{ ok: boolean }>;
+  getRecord: (p: { schema: string; table: string; column: string; value: string }) => Promise<{
+    row: Record<string, unknown> | null;
+    primaryKey: string[];
+  }>;
+  onSearchProgress: (cb: (p: SearchProgress) => void) => () => void;
+  getServerInfo: () => Promise<ServerInfo>;
+  getDatabaseSize: () => Promise<DatabaseSize>;
+  shrinkDatabase: () => Promise<{ ok: boolean; database: string; durationMs: number }>;
+  getFragmentation: (p?: { threshold?: number }) => Promise<FragmentationRow[]>;
+  runIndexMaintenance: (p?: { threshold?: number }) => Promise<{
+    total: number;
+    processed: Array<FragmentationRow & { action: "REBUILD" | "REORGANIZE"; ok: boolean; error?: string }>;
+    aborted: boolean;
+    durationMs: number;
+  }>;
+  cancelMaintenance: () => Promise<{ ok: boolean }>;
+  onMaintenanceProgress: (cb: (p: MaintenanceProgress) => void) => () => void;
+}
+
+export interface ServerInfo {
+  ServerName?: string;
+  DatabaseName?: string;
+  Version?: string;
+  Edition?: string;
+  Level?: string;
+}
+
+export interface DatabaseSize {
+  totalMB: number;
+  usedMB: number;
+  freeMB: number;
+}
+
+export interface FragmentationRow {
+  TableName: string;
+  IndexName: string;
+  IndexType: string;
+  Fragmentation: number;
+}
+
+export interface MaintenanceProgress {
+  index: number;
+  total: number;
+  tableName: string;
+  indexName: string;
+  fragmentation: number;
+  action: "REBUILD" | "REORGANIZE";
+  status: "running" | "done" | "error";
+  error?: string;
+}
+
+declare global {
+  interface Window {
+    erp?: ErpApi;
+  }
+}
+
+export const TEXT_TYPES = [
+  "varchar", "nvarchar", "char", "nchar", "text", "ntext",
+] as const;
+export const NUMBER_TYPES = [
+  "int", "bigint", "smallint", "tinyint", "decimal", "numeric", "money", "smallmoney",
+] as const;
+export const ID_TYPES = ["uniqueidentifier"] as const;
