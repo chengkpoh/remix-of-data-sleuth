@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import { getErp } from "@/lib/erp/client";
+import { TableMultiSelect } from "./TableMultiSelect";
 import type {
   SchemaSnapshot, TableInfo, TableColumnInfo, ColumnDependencies,
 } from "@/lib/erp/types";
