@@ -179,8 +179,13 @@ export function DataHealthChecker({ schema }: { schema: SchemaSnapshot; dark?: b
           </Button>
         </div>
         {scanning && progress && (
-          <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground">
+          <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            {progress.outerTotal > 1 && (
+              <span>
+                Target <span className="font-mono text-foreground">{progress.outerIndex} / {progress.outerTotal}</span>
+              </span>
+            )}
             <span>Scanning <span className="font-mono text-foreground">{progress.index} / {progress.total || "…"}</span></span>
             {progress.currentTable && (
               <span className="truncate font-mono">→ {progress.currentTable}</span>
