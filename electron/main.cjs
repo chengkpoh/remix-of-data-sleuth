@@ -620,6 +620,143 @@ function registerIpc(mainWindow) {
       durationMs: Date.now() - startedAt,
     };
   });
+
+  // ---------------- Data Explorer ----------------
+  ipcMain.handle("erp:getForeignKeys", async () => {
+    if (!pool) throw new Error("Not connected");
+    const r = await pool.request().query(`
+      SELECT
+        OBJECT_SCHEMA_NAME(fkc.parent_object_id)    AS parentSchema,
+        OBJECT_NAME(fkc.parent_object_id)           AS parentTable,
+        pc.name                                     AS parentColumn,
+        OBJECT_SCHEMA_NAME(fkc.referenced_object_id) AS refSchema,
+        OBJECT_NAME(fkc.referenced_object_id)        AS refTable,
+        rc.name                                     AS refColumn
+      FROM sys.foreign_key_columns fkc
+      JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id     AND pc.column_id = fkc.parent_column_id
+      JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+    `);
+    return r.recordset;
+  });
+
+  ipcMain.handle("erp:runDataExplorerQuery", async (_e, spec) => {
+    if (!pool) throw new Error("Not connected");
+    if (!schemaCache) await loadSchema();
+
+    const tables = Array.isArray(spec?.tables) ? spec.tables : [];
+    if (!tables.length) throw new Error("Select at least one table.");
+
+    // Validate tables exist & build alias map
+    const tableByAlias = new Map();
+    for (const t of tables) {
+      const exists = schemaCache.tables.some((x) => x.schema === t.schema && x.name === t.name);
+      if (!exists) throw new Error(`Unknown table ${t.schema}.${t.name}`);
+      const alias = String(t.alias || t.name).replace(/[^A-Za-z0-9_]/g, "");
+      if (!alias) throw new Error(`Invalid alias for ${t.schema}.${t.name}`);
+      if (tableByAlias.has(alias)) throw new Error(`Duplicate alias "${alias}"`);
+      tableByAlias.set(alias, { ...t, alias });
+    }
+
+    const colExists = (alias, col) => {
+      const t = tableByAlias.get(alias);
+      if (!t) return null;
+      const c = schemaCache.columns.find(
+        (x) => x.schema === t.schema && x.table === t.name && x.column === col,
+      );
+      return c ? c.type : null;
+    };
+
+    const quoteIdent = (s) => "[" + String(s).replace(/]/g, "]]") + "]";
+
+    // FROM ... [JOINs]
+    const firstAlias = tables[0].alias || tables[0].name;
+    const fromParts = [`${quoteIdent(tables[0].schema)}.${quoteIdent(tables[0].name)} AS ${quoteIdent(firstAlias)} WITH (NOLOCK)`];
+
+    const joins = Array.isArray(spec.joins) ? spec.joins : [];
+    const joinedAliases = new Set([firstAlias]);
+    // Naive ordered join — assume each join references a previously-joined alias.
+    for (const j of joins) {
+      const leftType = colExists(j.leftAlias, j.leftColumn);
+      const rightType = colExists(j.rightAlias, j.rightColumn);
+      if (!leftType || !rightType) throw new Error(`Invalid join column: ${j.leftAlias}.${j.leftColumn} = ${j.rightAlias}.${j.rightColumn}`);
+      const newAlias = joinedAliases.has(j.leftAlias) ? j.rightAlias : j.leftAlias;
+      const t = tableByAlias.get(newAlias);
+      if (!t) throw new Error(`Unknown alias in join: ${newAlias}`);
+      fromParts.push(
+        `LEFT JOIN ${quoteIdent(t.schema)}.${quoteIdent(t.name)} AS ${quoteIdent(t.alias)} WITH (NOLOCK) ` +
+          `ON ${quoteIdent(j.leftAlias)}.${quoteIdent(j.leftColumn)} = ${quoteIdent(j.rightAlias)}.${quoteIdent(j.rightColumn)}`,
+      );
+      joinedAliases.add(newAlias);
+    }
+
+    // WHERE
+    const conditions = Array.isArray(spec.conditions) ? spec.conditions : [];
+    const req = pool.request();
+    let paramIdx = 0;
+    const addParam = (val) => {
+      const name = `p${paramIdx++}`;
+      req.input(name, val);
+      return `@${name}`;
+    };
+    const allowedOps = new Set([
+      "contains", "notContains", "startsWith", "endsWith", "equals", "notEquals",
+      "=", "!=", ">", "<", ">=", "<=", "between",
+      "isTrue", "isFalse", "before", "after", "onDate", "isNull", "isNotNull",
+    ]);
+
+    const whereParts = [];
+    conditions.forEach((c, i) => {
+      const type = colExists(c.alias, c.column);
+      if (!type) throw new Error(`Unknown column ${c.alias}.${c.column}`);
+      if (!allowedOps.has(c.operator)) throw new Error(`Bad operator ${c.operator}`);
+      const colRef = `${quoteIdent(c.alias)}.${quoteIdent(c.column)}`;
+      let expr;
+      switch (c.operator) {
+        case "contains":     expr = `${colRef} LIKE ${addParam(`%${c.value ?? ""}%`)}`; break;
+        case "notContains":  expr = `${colRef} NOT LIKE ${addParam(`%${c.value ?? ""}%`)}`; break;
+        case "startsWith":   expr = `${colRef} LIKE ${addParam(`${c.value ?? ""}%`)}`; break;
+        case "endsWith":     expr = `${colRef} LIKE ${addParam(`%${c.value ?? ""}`)}`; break;
+        case "equals":
+        case "=":            expr = `${colRef} = ${addParam(c.value)}`; break;
+        case "notEquals":
+        case "!=":           expr = `${colRef} <> ${addParam(c.value)}`; break;
+        case ">":            expr = `${colRef} > ${addParam(c.value)}`; break;
+        case "<":            expr = `${colRef} < ${addParam(c.value)}`; break;
+        case ">=":           expr = `${colRef} >= ${addParam(c.value)}`; break;
+        case "<=":           expr = `${colRef} <= ${addParam(c.value)}`; break;
+        case "between":      expr = `${colRef} BETWEEN ${addParam(c.value)} AND ${addParam(c.value2)}`; break;
+        case "isTrue":       expr = `${colRef} = 1`; break;
+        case "isFalse":      expr = `${colRef} = 0`; break;
+        case "before":       expr = `${colRef} < ${addParam(c.value)}`; break;
+        case "after":        expr = `${colRef} > ${addParam(c.value)}`; break;
+        case "onDate":       expr = `CAST(${colRef} AS date) = ${addParam(c.value)}`; break;
+        case "isNull":       expr = `${colRef} IS NULL`; break;
+        case "isNotNull":    expr = `${colRef} IS NOT NULL`; break;
+        default: throw new Error(`Unsupported operator ${c.operator}`);
+      }
+      const openP = c.groupOpen ? "(" : "";
+      const closeP = c.groupClose ? ")" : "";
+      const conj = i === 0 ? "" : (String(c.andOr).toUpperCase() === "OR" ? " OR " : " AND ");
+      whereParts.push(`${conj}${openP}${expr}${closeP}`);
+    });
+
+    const limit = Math.max(1, Math.min(10000, Number(spec.limit) || 100));
+
+    const sqlText =
+      `SELECT TOP (${limit}) * FROM ${fromParts.join(" ")}` +
+      (whereParts.length ? ` WHERE ${whereParts.join("")}` : "");
+
+    const startedAt = Date.now();
+    const res = await req.query(sqlText);
+    return {
+      columns: (res.recordset && res.recordset.columns)
+        ? Object.keys(res.recordset.columns)
+        : (res.recordset[0] ? Object.keys(res.recordset[0]) : []),
+      rows: res.recordset || [],
+      sql: sqlText,
+      durationMs: Date.now() - startedAt,
+    };
+  });
 }
 
 function createWindow() {

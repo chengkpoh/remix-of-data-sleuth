@@ -1,0 +1,687 @@
+import { useEffect, useMemo, useState } from "react";
+import {
+  Play, Save, FolderOpen, Trash2, Download, Copy, Plus, X, Table as TableIcon, Loader2, Link2,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+} from "@/components/ui/dialog";
+import { toast } from "sonner";
+import { getErp } from "@/lib/erp/client";
+import type {
+  SchemaSnapshot, TableInfo, ColumnInfo, ForeignKeyInfo,
+  DataExplorerSpec, DataExplorerCondition, DataExplorerJoin,
+} from "@/lib/erp/types";
+
+type ColCat = "text" | "number" | "bool" | "date" | "other";
+
+const TEXT = new Set(["varchar", "nvarchar", "char", "nchar", "text", "ntext"]);
+const NUM  = new Set(["int", "bigint", "smallint", "tinyint", "decimal", "numeric", "money", "smallmoney", "float", "real"]);
+const BOOL = new Set(["bit"]);
+const DATE = new Set(["date", "datetime", "datetime2", "smalldatetime", "datetimeoffset", "time"]);
+
+function categoryOf(type: string): ColCat {
+  const t = (type || "").toLowerCase();
+  if (TEXT.has(t)) return "text";
+  if (NUM.has(t)) return "number";
+  if (BOOL.has(t)) return "bool";
+  if (DATE.has(t)) return "date";
+  return "other";
+}
+
+const OPS: Record<ColCat, { value: string; label: string }[]> = {
+  text: [
+    { value: "contains", label: "Contains" },
+    { value: "notContains", label: "Not Contains" },
+    { value: "startsWith", label: "Starts With" },
+    { value: "endsWith", label: "Ends With" },
+    { value: "equals", label: "Equals" },
+    { value: "notEquals", label: "Not Equals" },
+    { value: "isNull", label: "Is Null" },
+    { value: "isNotNull", label: "Is Not Null" },
+  ],
+  number: [
+    { value: "=", label: "=" }, { value: "!=", label: "!=" },
+    { value: ">", label: ">" }, { value: "<", label: "<" },
+    { value: ">=", label: ">=" }, { value: "<=", label: "<=" },
+    { value: "between", label: "Between" },
+    { value: "isNull", label: "Is Null" }, { value: "isNotNull", label: "Is Not Null" },
+  ],
+  bool: [
+    { value: "isTrue", label: "True" }, { value: "isFalse", label: "False" },
+  ],
+  date: [
+    { value: "before", label: "Before" }, { value: "after", label: "After" },
+    { value: "between", label: "Between" }, { value: "onDate", label: "On Date" },
+    { value: "isNull", label: "Is Null" }, { value: "isNotNull", label: "Is Not Null" },
+  ],
+  other: [
+    { value: "equals", label: "Equals" }, { value: "notEquals", label: "Not Equals" },
+    { value: "isNull", label: "Is Null" }, { value: "isNotNull", label: "Is Not Null" },
+  ],
+};
+
+interface SelectedTable extends TableInfo { alias: string }
+interface UICondition extends DataExplorerCondition { id: string }
+
+const newId = () => Math.random().toString(36).slice(2, 9);
+
+function aliasFor(name: string, used: Set<string>): string {
+  const caps = name.replace(/[^A-Z]/g, "");
+  let base = (caps || name.slice(0, 2)).toUpperCase();
+  if (!base) base = "T";
+  let alias = base;
+  let i = 2;
+  while (used.has(alias)) alias = base + i++;
+  return alias;
+}
+
+const SAVED_KEY = "erp.dataExplorer.savedQueries.v1";
+interface SavedQuery {
+  name: string;
+  spec: DataExplorerSpec;
+  savedAt: number;
+}
+
+export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean }) {
+  const [tableSearch, setTableSearch] = useState("");
+  const [showSystem, setShowSystem] = useState(false);
+  const [selected, setSelected] = useState<SelectedTable[]>([]);
+  const [conditions, setConditions] = useState<UICondition[]>([]);
+  const [joins, setJoins] = useState<DataExplorerJoin[]>([]);
+  const [foreignKeys, setForeignKeys] = useState<ForeignKeyInfo[]>([]);
+
+  const [queryName, setQueryName] = useState("");
+  const [limit, setLimit] = useState(100);
+
+  const [running, setRunning] = useState(false);
+  const [resultCols, setResultCols] = useState<string[]>([]);
+  const [resultRows, setResultRows] = useState<Record<string, unknown>[]>([]);
+  const [sortKey, setSortKey] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
+
+  const [loadOpen, setLoadOpen] = useState(false);
+  const [savedList, setSavedList] = useState<SavedQuery[]>([]);
+
+  // Load FKs once when component mounts (best-effort)
+  useEffect(() => {
+    const erp = getErp();
+    if (!erp?.getForeignKeys) return;
+    erp.getForeignKeys().then(setForeignKeys).catch(() => {});
+  }, []);
+
+  // Filtered table list (sidebar)
+  const filteredTables = useMemo(() => {
+    const q = tableSearch.trim().toLowerCase();
+    return schema.tables.filter((t) => {
+      if (!showSystem && (t.schema === "sys" || t.schema === "INFORMATION_SCHEMA")) return false;
+      if (!q) return true;
+      return `${t.schema}.${t.name}`.toLowerCase().includes(q);
+    });
+  }, [schema.tables, tableSearch, showSystem]);
+
+  const isSelected = (t: TableInfo) =>
+    selected.some((s) => s.schema === t.schema && s.name === t.name);
+
+  const toggleTable = (t: TableInfo) => {
+    if (isSelected(t)) {
+      setSelected((s) => s.filter((x) => !(x.schema === t.schema && x.name === t.name)));
+    } else {
+      const used = new Set(selected.map((s) => s.alias));
+      setSelected((s) => [...s, { ...t, alias: aliasFor(t.name, used) }]);
+    }
+  };
+
+  // Columns for selected tables (with alias prefix)
+  const aliasColumns = useMemo(() => {
+    const out: { alias: string; column: string; type: string; cat: ColCat; full: string }[] = [];
+    for (const t of selected) {
+      const cols = schema.columns.filter((c) => c.schema === t.schema && c.table === t.name);
+      for (const c of cols) {
+        out.push({
+          alias: t.alias,
+          column: c.column,
+          type: c.type,
+          cat: categoryOf(c.type),
+          full: `${t.alias}.${c.column}`,
+        });
+      }
+    }
+    return out;
+  }, [selected, schema.columns]);
+
+  const colInfo = (alias: string, column: string) =>
+    aliasColumns.find((c) => c.alias === alias && c.column === column);
+
+  // Auto-detect joins when 2+ tables are selected
+  useEffect(() => {
+    if (selected.length < 2 || !foreignKeys.length) return;
+    const detected: DataExplorerJoin[] = [];
+    for (const a of selected) {
+      for (const b of selected) {
+        if (a.alias === b.alias) continue;
+        const fk = foreignKeys.find(
+          (f) =>
+            f.parentSchema === a.schema && f.parentTable === a.name &&
+            f.refSchema === b.schema && f.refTable === b.name,
+        );
+        if (fk) {
+          const exists = detected.some(
+            (d) =>
+              (d.leftAlias === a.alias && d.rightAlias === b.alias) ||
+              (d.leftAlias === b.alias && d.rightAlias === a.alias),
+          );
+          if (!exists) detected.push({
+            leftAlias: a.alias, leftColumn: fk.parentColumn,
+            rightAlias: b.alias, rightColumn: fk.refColumn,
+          });
+        }
+      }
+    }
+    setJoins(detected);
+  }, [selected, foreignKeys]);
+
+  const addCondition = () => {
+    const first = aliasColumns[0];
+    setConditions((c) => [
+      ...c,
+      {
+        id: newId(),
+        andOr: c.length === 0 ? "AND" : "AND",
+        alias: first?.alias ?? "",
+        column: first?.column ?? "",
+        operator: first ? OPS[first.cat][0].value : "equals",
+        value: "",
+      },
+    ]);
+  };
+  const removeCondition = (id: string) =>
+    setConditions((c) => c.filter((x) => x.id !== id));
+  const updateCondition = (id: string, patch: Partial<UICondition>) =>
+    setConditions((c) => c.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+
+  const buildSpec = (): DataExplorerSpec => ({
+    tables: selected.map((s) => ({ schema: s.schema, name: s.name, alias: s.alias })),
+    joins,
+    conditions: conditions.map(({ id: _id, ...rest }) => rest),
+    limit,
+  });
+
+  const runQuery = async () => {
+    const erp = getErp();
+    if (!erp?.runDataExplorerQuery) {
+      toast.error("Data Explorer requires the Electron desktop build.");
+      return;
+    }
+    if (!selected.length) { toast.error("Select at least one table."); return; }
+    setRunning(true);
+    try {
+      const res = await erp.runDataExplorerQuery(buildSpec());
+      const cols = res.columns.length
+        ? res.columns
+        : (res.rows[0] ? Object.keys(res.rows[0]) : []);
+      setResultCols(cols);
+      setResultRows(res.rows);
+      setPage(1);
+      toast.success(`${res.rows.length} row(s) in ${res.durationMs}ms`);
+    } catch (e) {
+      toast.error(`Query failed: ${(e as Error).message}`);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const clearAll = () => {
+    setSelected([]); setConditions([]); setJoins([]);
+    setResultCols([]); setResultRows([]); setQueryName("");
+  };
+
+  // ---- Save / Load ----
+  const loadSaved = (): SavedQuery[] => {
+    try { return JSON.parse(localStorage.getItem(SAVED_KEY) || "[]"); } catch { return []; }
+  };
+  const saveQuery = () => {
+    const name = queryName.trim();
+    if (!name) { toast.error("Enter a query name first."); return; }
+    if (!selected.length) { toast.error("Select at least one table."); return; }
+    const list = loadSaved().filter((q) => q.name !== name);
+    list.push({ name, spec: buildSpec(), savedAt: Date.now() });
+    localStorage.setItem(SAVED_KEY, JSON.stringify(list));
+    toast.success(`Saved "${name}"`);
+  };
+  const openLoad = () => {
+    setSavedList(loadSaved().sort((a, b) => b.savedAt - a.savedAt));
+    setLoadOpen(true);
+  };
+  const applySaved = (q: SavedQuery) => {
+    setQueryName(q.name);
+    setSelected(q.spec.tables.map((t) => ({ schema: t.schema, name: t.name, alias: t.alias })));
+    setJoins(q.spec.joins);
+    setConditions(q.spec.conditions.map((c) => ({ ...c, id: newId() })));
+    setLimit(q.spec.limit);
+    setLoadOpen(false);
+    toast.success(`Loaded "${q.name}"`);
+  };
+  const deleteSaved = (name: string) => {
+    const list = loadSaved().filter((q) => q.name !== name);
+    localStorage.setItem(SAVED_KEY, JSON.stringify(list));
+    setSavedList(list);
+  };
+
+  // ---- Results: sort + paginate ----
+  const sortedRows = useMemo(() => {
+    if (!sortKey) return resultRows;
+    const arr = [...resultRows];
+    arr.sort((a, b) => {
+      const av = a[sortKey] as unknown; const bv = b[sortKey] as unknown;
+      if (av == null && bv == null) return 0;
+      if (av == null) return -1;
+      if (bv == null) return 1;
+      if (typeof av === "number" && typeof bv === "number") return sortDir === "asc" ? av - bv : bv - av;
+      const as = String(av), bs = String(bv);
+      return sortDir === "asc" ? as.localeCompare(bs) : bs.localeCompare(as);
+    });
+    return arr;
+  }, [resultRows, sortKey, sortDir]);
+
+  const pageRows = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return sortedRows.slice(start, start + pageSize);
+  }, [sortedRows, page, pageSize]);
+  const totalPages = Math.max(1, Math.ceil(sortedRows.length / pageSize));
+
+  const exportCSV = () => {
+    if (!resultRows.length) { toast.error("Nothing to export."); return; }
+    const esc = (v: unknown) => {
+      if (v == null) return "";
+      const s = String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const csv = [
+      resultCols.join(","),
+      ...resultRows.map((r) => resultCols.map((c) => esc(r[c])).join(",")),
+    ].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `data-explorer-${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  const copyResults = async () => {
+    if (!resultRows.length) { toast.error("Nothing to copy."); return; }
+    const text = [
+      resultCols.join("\t"),
+      ...resultRows.map((r) => resultCols.map((c) => (r[c] == null ? "" : String(r[c]))).join("\t")),
+    ].join("\n");
+    await navigator.clipboard.writeText(text);
+    toast.success("Copied to clipboard");
+  };
+
+  // ===== render =====
+  return (
+    <div className="grid grid-cols-[280px_1fr] min-h-[calc(100vh-49px)]">
+      {/* ---------- Sidebar ---------- */}
+      <aside className="flex flex-col border-r border-border bg-card/30">
+        <div className="border-b border-border p-3">
+          <Label className="mb-1.5 block text-xs font-medium text-muted-foreground">Database</Label>
+          <div className="rounded-md border border-border bg-background/60 px-2.5 py-2 text-xs font-mono">
+            {schema.tables[0]?.schema ? "Connected DB" : "—"}
+          </div>
+        </div>
+        <div className="border-b border-border p-3">
+          <div className="relative">
+            <Input
+              value={tableSearch}
+              onChange={(e) => setTableSearch(e.target.value)}
+              placeholder="Search tables…"
+              className="h-8 text-xs"
+            />
+          </div>
+          <label className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
+            <Checkbox checked={showSystem} onCheckedChange={(v) => setShowSystem(!!v)} />
+            Show system tables
+          </label>
+        </div>
+        <div className="flex-1 overflow-hidden">
+          <Label className="block px-3 pt-2 text-xs font-medium text-muted-foreground">Tables</Label>
+          <ScrollArea className="h-[calc(100vh-380px)] px-1">
+            <div className="p-1">
+              {filteredTables.map((t) => {
+                const checked = isSelected(t);
+                return (
+                  <label
+                    key={`${t.schema}.${t.name}`}
+                    className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent"
+                  >
+                    <Checkbox checked={checked} onCheckedChange={() => toggleTable(t)} />
+                    <TableIcon className="h-3 w-3 text-muted-foreground" />
+                    <span className="truncate font-mono">{t.name}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </ScrollArea>
+        </div>
+        <div className="border-t border-border p-3">
+          <div className="mb-2 flex items-center justify-between">
+            <Label className="text-xs font-medium">Selected Tables ({selected.length})</Label>
+            {selected.length > 0 && (
+              <button onClick={() => setSelected([])} className="text-[11px] text-primary hover:underline">
+                Clear All
+              </button>
+            )}
+          </div>
+          <div className="space-y-1 max-h-32 overflow-auto">
+            {selected.map((t) => (
+              <div key={t.alias} className="flex items-center justify-between rounded border border-border bg-background/60 px-2 py-1 text-xs">
+                <span className="truncate font-mono">
+                  {t.name} <span className="text-muted-foreground">as {t.alias}</span>
+                </span>
+                <button onClick={() => toggleTable(t)} className="text-muted-foreground hover:text-destructive">
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+            {!selected.length && (
+              <div className="text-[11px] text-muted-foreground italic">No tables selected</div>
+            )}
+          </div>
+        </div>
+      </aside>
+
+      {/* ---------- Main ---------- */}
+      <main className="flex flex-col min-w-0">
+        {/* Header: Query Builder toolbar */}
+        <div className="border-b border-border bg-card/30 px-4 py-3">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <h2 className="mr-3 text-sm font-semibold">Query Builder</h2>
+            <div className="flex flex-1 items-center gap-2 min-w-[260px]">
+              <Label className="text-xs text-muted-foreground whitespace-nowrap">Query name (optional)</Label>
+              <Input
+                value={queryName}
+                onChange={(e) => setQueryName(e.target.value)}
+                placeholder="Enter query name…"
+                className="h-8 text-xs max-w-sm"
+              />
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Button onClick={runQuery} disabled={running} size="sm">
+                {running ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Play className="mr-1.5 h-3.5 w-3.5" />}
+                Run Query
+              </Button>
+              <Button variant="outline" size="sm" onClick={saveQuery}>
+                <Save className="mr-1.5 h-3.5 w-3.5" /> Save Query
+              </Button>
+              <Button variant="outline" size="sm" onClick={openLoad}>
+                <FolderOpen className="mr-1.5 h-3.5 w-3.5" /> Load Query
+              </Button>
+              <Button variant="outline" size="sm" onClick={clearAll}>
+                <Trash2 className="mr-1.5 h-3.5 w-3.5" /> Clear
+              </Button>
+            </div>
+          </div>
+
+          {/* Conditions grid */}
+          <div className="rounded-md border border-border bg-background/60">
+            <div className="grid grid-cols-[80px_100px_1fr_180px_1fr_70px_60px] items-center gap-2 border-b border-border bg-muted/40 px-3 py-1.5 text-[11px] font-medium uppercase text-muted-foreground">
+              <div /><div>And/Or</div><div>Field</div><div>Operator</div><div>Value</div><div className="text-center">( Group )</div><div className="text-right">Actions</div>
+            </div>
+            <div className="divide-y divide-border">
+              {conditions.length === 0 && (
+                <div className="px-3 py-4 text-center text-xs text-muted-foreground">
+                  No conditions. Click "Add new condition" below to start.
+                </div>
+              )}
+              {conditions.map((c, i) => {
+                const ci = colInfo(c.alias, c.column);
+                const cat: ColCat = ci?.cat ?? "other";
+                const ops = OPS[cat];
+                const needsValue = !["isTrue", "isFalse", "isNull", "isNotNull"].includes(c.operator);
+                const needsValue2 = c.operator === "between";
+                const inputType =
+                  cat === "number" ? "number" :
+                  cat === "date" ? (c.operator === "onDate" || ["before", "after"].includes(c.operator) ? "date" : "date") :
+                  "text";
+                return (
+                  <div key={c.id} className="grid grid-cols-[80px_100px_1fr_180px_1fr_70px_60px] items-center gap-2 px-3 py-1.5 text-xs">
+                    <div className="flex items-center gap-1">
+                      <button onClick={addCondition} className="text-emerald-500 hover:text-emerald-400"><Plus className="h-3.5 w-3.5" /></button>
+                      <button onClick={() => removeCondition(c.id)} className="text-destructive hover:opacity-80"><X className="h-3.5 w-3.5" /></button>
+                    </div>
+                    {i === 0 ? (
+                      <div className="text-muted-foreground" />
+                    ) : (
+                      <Select value={c.andOr} onValueChange={(v) => updateCondition(c.id, { andOr: v as "AND" | "OR" })}>
+                        <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="AND">And</SelectItem>
+                          <SelectItem value="OR">Or</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    )}
+                    <Select
+                      value={c.alias && c.column ? `${c.alias}|${c.column}` : ""}
+                      onValueChange={(v) => {
+                        const [alias, column] = v.split("|");
+                        const info = colInfo(alias, column);
+                        const firstOp = info ? OPS[info.cat][0].value : "equals";
+                        updateCondition(c.id, { alias, column, operator: firstOp, value: "" });
+                      }}
+                    >
+                      <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="Select field…" /></SelectTrigger>
+                      <SelectContent>
+                        {aliasColumns.map((ac) => (
+                          <SelectItem key={ac.full} value={`${ac.alias}|${ac.column}`}>
+                            <span className="font-mono">{ac.full}</span>
+                            <span className="ml-2 text-[10px] text-muted-foreground">{ac.type}</span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Select value={c.operator} onValueChange={(v) => updateCondition(c.id, { operator: v })}>
+                      <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {ops.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    <div className="flex items-center gap-1">
+                      {cat === "bool" || !needsValue ? (
+                        <span className="text-[11px] text-muted-foreground italic">—</span>
+                      ) : (
+                        <>
+                          <Input
+                            type={inputType}
+                            value={String(c.value ?? "")}
+                            onChange={(e) => updateCondition(c.id, { value: e.target.value })}
+                            className="h-7 text-xs"
+                          />
+                          {needsValue2 && (
+                            <Input
+                              type={inputType}
+                              value={String(c.value2 ?? "")}
+                              onChange={(e) => updateCondition(c.id, { value2: e.target.value })}
+                              className="h-7 text-xs"
+                              placeholder="and"
+                            />
+                          )}
+                        </>
+                      )}
+                    </div>
+                    <div className="flex items-center justify-center gap-1">
+                      <button
+                        onClick={() => updateCondition(c.id, { groupOpen: !c.groupOpen })}
+                        className={`rounded px-1 text-[11px] ${c.groupOpen ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                      >(</button>
+                      <button
+                        onClick={() => updateCondition(c.id, { groupClose: !c.groupClose })}
+                        className={`rounded px-1 text-[11px] ${c.groupClose ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                      >)</button>
+                    </div>
+                    <div className="text-right">
+                      <button onClick={() => removeCondition(c.id)} className="text-muted-foreground hover:text-destructive">
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="border-t border-border px-3 py-1.5">
+              <button onClick={addCondition} disabled={!selected.length} className="flex items-center gap-1 text-xs text-emerald-500 hover:text-emerald-400 disabled:opacity-50">
+                <Plus className="h-3.5 w-3.5" /> Add new condition
+              </button>
+            </div>
+          </div>
+
+          {/* Join builder */}
+          {selected.length >= 2 && (
+            <div className="mt-3 rounded-md border border-border bg-background/60 p-3">
+              <div className="mb-2 flex items-center gap-2">
+                <Link2 className="h-3.5 w-3.5 text-muted-foreground" />
+                <span className="text-xs font-medium">Join Builder</span>
+                <Badge variant="outline" className="text-[10px]">Auto Detect Joins</Badge>
+              </div>
+              {joins.length === 0 && (
+                <div className="text-[11px] text-muted-foreground italic">
+                  No foreign-key relationships detected between selected tables.
+                </div>
+              )}
+              {joins.map((j, i) => (
+                <div key={i} className="flex items-center gap-2 py-1 text-xs">
+                  <Badge variant="secondary" className="font-mono">{j.leftAlias}.{j.leftColumn}</Badge>
+                  <span className="text-muted-foreground">=</span>
+                  <Badge variant="secondary" className="font-mono">{j.rightAlias}.{j.rightColumn}</Badge>
+                  <button
+                    onClick={() => setJoins((js) => js.filter((_, idx) => idx !== i))}
+                    className="ml-auto text-muted-foreground hover:text-destructive"
+                  ><X className="h-3 w-3" /></button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Results */}
+        <div className="flex items-center justify-between border-b border-border bg-background px-4 py-2 text-xs">
+          <div className="flex items-center gap-3">
+            <span className="font-semibold">Results</span>
+            <Button variant="ghost" size="sm" onClick={exportCSV} disabled={!resultRows.length}>
+              <Download className="mr-1.5 h-3.5 w-3.5" /> Export
+            </Button>
+            <Button variant="ghost" size="sm" onClick={copyResults} disabled={!resultRows.length}>
+              <Copy className="mr-1.5 h-3.5 w-3.5" /> Copy
+            </Button>
+          </div>
+          <div className="flex items-center gap-2 text-muted-foreground">
+            <span>Show</span>
+            <Select value={String(pageSize)} onValueChange={(v) => { setPageSize(Number(v)); setPage(1); }}>
+              <SelectTrigger className="h-7 w-[80px] text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {[25, 50, 100, 250, 500].map((n) => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <span>rows</span>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-auto">
+          {resultRows.length === 0 ? (
+            <div className="flex h-full items-center justify-center p-10 text-center text-sm text-muted-foreground">
+              No results yet — build conditions and click "Run Query".
+            </div>
+          ) : (
+            <table className="w-full border-collapse text-xs">
+              <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
+                <tr className="border-b border-border text-left">
+                  {resultCols.map((c) => (
+                    <th
+                      key={c}
+                      onClick={() => {
+                        if (sortKey === c) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                        else { setSortKey(c); setSortDir("asc"); }
+                      }}
+                      className="cursor-pointer px-3 py-2 font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground"
+                    >
+                      {c}{sortKey === c ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {pageRows.map((r, i) => (
+                  <tr key={i} className="border-b border-border/50 hover:bg-accent/30">
+                    {resultCols.map((c) => (
+                      <td key={c} className="px-3 py-1.5 font-mono whitespace-nowrap">
+                        {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {resultRows.length > 0 && (
+          <div className="flex items-center justify-between border-t border-border bg-card/30 px-4 py-2 text-xs">
+            <span className="text-muted-foreground">Total rows: {resultRows.length}</span>
+            <div className="flex items-center gap-1">
+              <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>‹</Button>
+              <span className="px-2">{page} / {totalPages}</span>
+              <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>›</Button>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* Load dialog */}
+      <Dialog open={loadOpen} onOpenChange={setLoadOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Saved Queries</DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[60vh] overflow-auto">
+            {savedList.length === 0 && (
+              <div className="py-6 text-center text-sm text-muted-foreground">No saved queries.</div>
+            )}
+            {savedList.map((q) => (
+              <div key={q.name} className="flex items-center justify-between rounded border border-border bg-background/60 px-3 py-2 mb-1.5">
+                <div>
+                  <div className="text-sm font-medium">{q.name}</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    {q.spec.tables.length} table(s), {q.spec.conditions.length} condition(s) ·{" "}
+                    {new Date(q.savedAt).toLocaleString()}
+                  </div>
+                </div>
+                <div className="flex gap-1">
+                  <Button size="sm" onClick={() => applySaved(q)}>Load</Button>
+                  <Button size="sm" variant="outline" onClick={() => deleteSaved(q.name)}>
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLoadOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// Unused import guard so eslint doesn't complain about ColumnInfo type.
+export type _ColumnInfo = ColumnInfo;

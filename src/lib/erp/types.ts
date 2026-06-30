@@ -94,6 +94,55 @@ export interface ErpApi {
   runHealthCheck: (p?: { schema?: string; table?: string; maxPerColumn?: number }) => Promise<HealthCheckResult>;
   cancelHealthCheck: () => Promise<{ ok: boolean }>;
   onHealthCheckProgress: (cb: (p: HealthCheckProgress) => void) => () => void;
+  getForeignKeys: () => Promise<ForeignKeyInfo[]>;
+  runDataExplorerQuery: (spec: DataExplorerSpec) => Promise<DataExplorerResult>;
+}
+
+export interface ForeignKeyInfo {
+  parentSchema: string;
+  parentTable: string;
+  parentColumn: string;
+  refSchema: string;
+  refTable: string;
+  refColumn: string;
+}
+
+export interface DataExplorerTable {
+  schema: string;
+  name: string;
+  alias: string;
+}
+
+export interface DataExplorerJoin {
+  leftAlias: string;
+  leftColumn: string;
+  rightAlias: string;
+  rightColumn: string;
+}
+
+export interface DataExplorerCondition {
+  andOr: "AND" | "OR";
+  alias: string;
+  column: string;
+  operator: string;
+  value?: string | number | boolean | null;
+  value2?: string | number | boolean | null;
+  groupOpen?: boolean;
+  groupClose?: boolean;
+}
+
+export interface DataExplorerSpec {
+  tables: DataExplorerTable[];
+  joins: DataExplorerJoin[];
+  conditions: DataExplorerCondition[];
+  limit: number;
+}
+
+export interface DataExplorerResult {
+  columns: string[];
+  rows: Record<string, unknown>[];
+  sql: string;
+  durationMs: number;
 }
 
 export interface HealthCheckViolation {

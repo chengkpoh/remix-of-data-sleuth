@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Database, Loader2, Plug, PlugZap, Search, X, Download, FileSpreadsheet,
   Table as TableIcon, Eye, AlertTriangle, CheckCircle2, Moon, Sun, StopCircle,
-  LayoutDashboard, Wrench, ShieldCheck, History, Save,
+  LayoutDashboard, Wrench, ShieldCheck, History, Save, FileSearch,
 } from "lucide-react";
 import { PasswordInput } from "./PasswordInput";
 import {
@@ -36,9 +36,10 @@ import {
 import { Dashboard } from "./Dashboard";
 import { SchemaManager } from "./SchemaManager";
 import { DataHealthChecker } from "./DataHealthChecker";
+import { DataExplorer } from "./DataExplorer";
 
 type Phase = "disconnected" | "connecting" | "connected";
-type View = "dashboard" | "search" | "schema" | "health";
+type View = "dashboard" | "search" | "explorer" | "schema" | "health";
 
 const DEFAULT_CFG: ConnectionConfig = {
   server: "localhost",
@@ -87,6 +88,8 @@ export function ErpApp() {
         />
       ) : view === "dashboard" ? (
         <Dashboard dark={dark} />
+      ) : view === "explorer" ? (
+        <DataExplorer schema={schema!} dark={dark} />
       ) : view === "schema" ? (
         <SchemaManager schema={schema!} dark={dark} />
       ) : view === "health" ? (
@@ -135,6 +138,12 @@ function TopBar(props: {
               className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition ${view === "search" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
             >
               <Search className="h-3.5 w-3.5" /> Data Finder
+            </button>
+            <button
+              onClick={() => onViewChange("explorer")}
+              className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition ${view === "explorer" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              <FileSearch className="h-3.5 w-3.5" /> Data Explorer
             </button>
             <button
               onClick={() => onViewChange("schema")}
