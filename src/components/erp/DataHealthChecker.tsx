@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, ShieldCheck, StopCircle, Download, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -6,34 +6,26 @@ import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from "@/components/ui/select";
 import { toast } from "sonner";
 import { getErp } from "@/lib/erp/client";
-import type { SchemaSnapshot, HealthCheckViolation } from "@/lib/erp/types";
-
-const ALL_TABLES = "__all__";
+import { TableMultiSelect } from "./TableMultiSelect";
+import type { SchemaSnapshot, HealthCheckViolation, TableInfo } from "@/lib/erp/types";
 
 export function DataHealthChecker({ schema }: { schema: SchemaSnapshot; dark?: boolean }) {
-  const [target, setTarget] = useState<string>(ALL_TABLES);
+  const [selectedTables, setSelectedTables] = useState<TableInfo[]>([]);
   const [scanning, setScanning] = useState(false);
-  const [progress, setProgress] = useState<{ index: number; total: number; currentTable: string } | null>(null);
+  const [cancelled, setCancelled] = useState(false);
+  const [progress, setProgress] = useState<{
+    index: number; total: number; currentTable: string;
+    outerIndex: number; outerTotal: number;
+  } | null>(null);
   const [violations, setViolations] = useState<HealthCheckViolation[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [lastSummary, setLastSummary] = useState<string>("");
 
   const offRef = useRef<(() => void) | null>(null);
+  const cancelRef = useRef(false);
   useEffect(() => () => { offRef.current?.(); }, []);
-
-  const tableOptions = useMemo(() => {
-    return schema.tables.map((t) => ({
-      value: `${t.schema}.${t.name}`,
-      label: `${t.schema}.${t.name}`,
-      schema: t.schema,
-      name: t.name,
-    }));
-  }, [schema]);
 
   const keyOf = (v: HealthCheckViolation, i: number) =>
     `${v.schema}.${v.table}.${v.column}.${v.recordId}.${i}`;
@@ -44,27 +36,60 @@ export function DataHealthChecker({ schema }: { schema: SchemaSnapshot; dark?: b
 
     setViolations([]);
     setSelected(new Set());
-    setProgress({ index: 0, total: 0, currentTable: "" });
     setScanning(true);
+    setCancelled(false);
+    cancelRef.current = false;
+
+    // Targets: empty multi-selection means All Tables (single run).
+    const targets: Array<{ schema?: string; table?: string; label: string }> =
+      selectedTables.length === 0
+        ? [{ label: "(all tables)" }]
+        : selectedTables.map((t) => ({ schema: t.schema, table: t.name, label: `${t.schema}.${t.name}` }));
+
+    setProgress({ index: 0, total: 0, currentTable: "", outerIndex: 0, outerTotal: targets.length });
 
     offRef.current?.();
     offRef.current = erp.onHealthCheckProgress((p) => {
-      setProgress({ index: p.index, total: p.total, currentTable: p.currentTable });
+      setProgress((prev) => ({
+        index: p.index,
+        total: p.total,
+        currentTable: p.currentTable,
+        outerIndex: prev?.outerIndex ?? 0,
+        outerTotal: prev?.outerTotal ?? targets.length,
+      }));
       if (p.warning) console.warn(`[${p.currentTable}]`, p.warning);
     });
 
-    let params: { schema?: string; table?: string } = {};
-    if (target !== ALL_TABLES) {
-      const opt = tableOptions.find((o) => o.value === target);
-      if (opt) params = { schema: opt.schema, table: opt.name };
-    }
+    const allViolations: HealthCheckViolation[] = [];
+    let scannedSum = 0;
+    let totalSum = 0;
+    let durationSum = 0;
+    let aborted = false;
+    const started = Date.now();
 
     try {
-      const r = await erp.runHealthCheck(params);
-      setViolations(r.violations);
-      const tag = r.aborted ? "Cancelled" : "Complete";
-      setLastSummary(`${tag}: ${r.violations.length} violation(s) across ${r.scanned}/${r.total} tables (${r.durationMs}ms)`);
-      toast.success(`${tag}: ${r.violations.length} violation(s) found`);
+      for (let i = 0; i < targets.length; i++) {
+        if (cancelRef.current) { aborted = true; break; }
+        const t = targets[i];
+        setProgress((prev) => ({
+          index: 0, total: 0, currentTable: t.label,
+          outerIndex: i + 1, outerTotal: targets.length,
+        }));
+        const r = await erp.runHealthCheck({ schema: t.schema, table: t.table });
+        allViolations.push(...r.violations);
+        scannedSum += r.scanned;
+        totalSum += r.total;
+        durationSum += r.durationMs;
+        if (r.aborted) { aborted = true; break; }
+      }
+      setViolations(allViolations);
+      const tag = aborted ? "Cancelled" : "Complete";
+      const ms = durationSum || (Date.now() - started);
+      setLastSummary(
+        `${tag}: ${allViolations.length} violation(s) across ${scannedSum}/${totalSum} table-scan(s) ` +
+        `over ${targets.length} target(s) (${ms}ms)`,
+      );
+      toast.success(`${tag}: ${allViolations.length} violation(s) found`);
     } catch (e) {
       toast.error(`Health check failed: ${(e as Error).message}`);
     } finally {
@@ -74,7 +99,11 @@ export function DataHealthChecker({ schema }: { schema: SchemaSnapshot; dark?: b
     }
   };
 
-  const cancel = async () => { await getErp()?.cancelHealthCheck(); };
+  const cancel = async () => {
+    cancelRef.current = true;
+    setCancelled(true);
+    await getErp()?.cancelHealthCheck();
+  };
 
   const toggleAll = (checked: boolean) => {
     if (!checked) { setSelected(new Set()); return; }
@@ -120,25 +149,25 @@ export function DataHealthChecker({ schema }: { schema: SchemaSnapshot; dark?: b
     <div className="flex flex-col gap-4 p-4">
       <Card className="p-4">
         <div className="flex flex-wrap items-end gap-3">
-          <div className="min-w-[280px] flex-1">
-            <Label className="mb-1.5 block text-xs font-medium text-muted-foreground">Table Filter</Label>
-            <Select value={target} onValueChange={setTarget}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL_TABLES}>All Tables</SelectItem>
-                {tableOptions.map((o) => (
-                  <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="min-w-[320px] flex-1">
+            <Label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+              Table Filter (empty = all tables)
+            </Label>
+            <TableMultiSelect
+              tables={schema.tables}
+              selected={selectedTables}
+              onChange={setSelectedTables}
+              triggerClassName="w-full"
+              contentWidth={380}
+            />
           </div>
           {!scanning ? (
             <Button onClick={runScan}>
               <ShieldCheck className="mr-1.5 h-3.5 w-3.5" /> Run Health Check
             </Button>
           ) : (
-            <Button variant="destructive" onClick={cancel}>
-              <StopCircle className="mr-1.5 h-3.5 w-3.5" /> Cancel
+            <Button variant="destructive" onClick={cancel} disabled={cancelled}>
+              <StopCircle className="mr-1.5 h-3.5 w-3.5" /> {cancelled ? "Cancelling…" : "Cancel"}
             </Button>
           )}
           <Button
@@ -150,8 +179,13 @@ export function DataHealthChecker({ schema }: { schema: SchemaSnapshot; dark?: b
           </Button>
         </div>
         {scanning && progress && (
-          <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground">
+          <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            {progress.outerTotal > 1 && (
+              <span>
+                Target <span className="font-mono text-foreground">{progress.outerIndex} / {progress.outerTotal}</span>
+              </span>
+            )}
             <span>Scanning <span className="font-mono text-foreground">{progress.index} / {progress.total || "…"}</span></span>
             {progress.currentTable && (
               <span className="truncate font-mono">→ {progress.currentTable}</span>

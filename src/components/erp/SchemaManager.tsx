@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import { getErp } from "@/lib/erp/client";
+import { TableMultiSelect } from "./TableMultiSelect";
 import type {
   SchemaSnapshot, TableInfo, TableColumnInfo, ColumnDependencies,
 } from "@/lib/erp/types";
@@ -81,11 +82,15 @@ interface RowState {
   spec: NewTypeSpec;
 }
 
+type TableKey = string; // `schema|name`
+const tableKey = (t: TableInfo) => `${t.schema}|${t.name}`;
+const rowKey = (t: TableInfo, col: string) => `${t.schema}|${t.name}|${col}`;
+
 export function SchemaManager({ schema, dark }: { schema: SchemaSnapshot; dark: boolean }) {
   const tables = schema.tables;
-  const [selectedKey, setSelectedKey] = useState<string>("__all__");
-  const [columns, setColumns] = useState<TableColumnInfo[] | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [selectedTables, setSelectedTables] = useState<TableInfo[]>([]);
+  const [tableColumns, setTableColumns] = useState<Record<TableKey, TableColumnInfo[]>>({});
+  const [loadingKeys, setLoadingKeys] = useState<Set<TableKey>>(new Set());
   const [rows, setRows] = useState<Record<string, RowState>>({});
 
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -95,113 +100,132 @@ export function SchemaManager({ schema, dark }: { schema: SchemaSnapshot; dark: 
   const [checkingDeps, setCheckingDeps] = useState(false);
   const [executing, setExecuting] = useState(false);
 
-  const selectedTable: TableInfo | null = useMemo(() => {
-    if (selectedKey === "__all__") return null;
-    const [s, n] = selectedKey.split("|");
-    return tables.find((t) => t.schema === s && t.name === n) ?? null;
-  }, [selectedKey, tables]);
-
+  // Fetch columns for any newly-selected table.
   useEffect(() => {
-    if (!selectedTable) { setColumns(null); setRows({}); return; }
     const erp = getErp();
-    if (!erp) { toast.error("SQL access requires the Electron desktop build."); return; }
-    setLoading(true);
-    erp.getTableColumns({ schema: selectedTable.schema, table: selectedTable.name })
-      .then((cols) => {
-        setColumns(cols);
-        const initial: Record<string, RowState> = {};
-        cols.forEach((c) => {
-          initial[c.columnName] = {
-            selected: false,
-            spec: {
-              baseType: c.dataType,
-              length: c.charMaxLength === -1 ? "MAX" : String(c.charMaxLength ?? ""),
-              precision: String(c.numericPrecision ?? ""),
-              scale: String(c.numericScale ?? ""),
-              nullable: c.isNullable === "YES",
-            },
-          };
+    if (!erp) return;
+    const missing = selectedTables.filter(
+      (t) => !tableColumns[tableKey(t)] && !loadingKeys.has(tableKey(t)),
+    );
+    if (!missing.length) return;
+    setLoadingKeys((prev) => {
+      const next = new Set(prev);
+      missing.forEach((t) => next.add(tableKey(t)));
+      return next;
+    });
+    missing.forEach((t) => {
+      erp.getTableColumns({ schema: t.schema, table: t.name })
+        .then((cols) => {
+          setTableColumns((prev) => ({ ...prev, [tableKey(t)]: cols }));
+          setRows((prev) => {
+            const next = { ...prev };
+            cols.forEach((c) => {
+              const k = rowKey(t, c.columnName);
+              if (!next[k]) {
+                next[k] = {
+                  selected: false,
+                  spec: {
+                    baseType: c.dataType,
+                    length: c.charMaxLength === -1 ? "MAX" : String(c.charMaxLength ?? ""),
+                    precision: String(c.numericPrecision ?? ""),
+                    scale: String(c.numericScale ?? ""),
+                    nullable: c.isNullable === "YES",
+                  },
+                };
+              }
+            });
+            return next;
+          });
+        })
+        .catch((e) => toast.error(`Failed to load ${t.schema}.${t.name}: ${(e as Error).message}`))
+        .finally(() => {
+          setLoadingKeys((prev) => {
+            const next = new Set(prev);
+            next.delete(tableKey(t));
+            return next;
+          });
         });
-        setRows(initial);
-      })
-      .catch((e) => toast.error(`Failed to load columns: ${(e as Error).message}`))
-      .finally(() => setLoading(false));
-  }, [selectedTable]);
+    });
+  }, [selectedTables, tableColumns, loadingKeys]);
 
-  const updateRow = (col: string, patch: Partial<RowState> | ((r: RowState) => RowState)) => {
+  const updateRow = (k: string, patch: Partial<RowState> | ((r: RowState) => RowState)) => {
     setRows((prev) => {
-      const cur = prev[col];
+      const cur = prev[k];
       if (!cur) return prev;
       const next = typeof patch === "function" ? patch(cur) : { ...cur, ...patch };
-      return { ...prev, [col]: next };
+      return { ...prev, [k]: next };
     });
   };
+  const updateSpec = (k: string, patch: Partial<NewTypeSpec>) =>
+    updateRow(k, (r) => ({ ...r, spec: { ...r.spec, ...patch } }));
 
-  const updateSpec = (col: string, patch: Partial<NewTypeSpec>) => {
-    updateRow(col, (r) => ({ ...r, spec: { ...r.spec, ...patch } }));
-  };
+  const selectedCount = useMemo(
+    () => Object.values(rows).filter((r) => r.selected).length,
+    [rows],
+  );
 
   const buildPreview = async () => {
-    if (!selectedTable || !columns) return;
     const erp = getErp();
     if (!erp) { toast.error("SQL access requires the Electron desktop build."); return; }
-    const picked = columns.filter((c) => rows[c.columnName]?.selected);
-    if (!picked.length) { toast.error("Select at least one column."); return; }
+    if (!selectedTables.length) { toast.error("Select at least one table."); return; }
 
     const stmts: string[] = [];
     const warns: string[] = [];
-    const tableRef = `${quote(selectedTable.schema)}.${quote(selectedTable.name)}`;
-
-    for (const c of picked) {
-      const spec = rows[c.columnName].spec;
-      const newSql = specToSql(spec);
-      const before = formatExistingType(c) + (c.isNullable === "YES" ? " NULL" : " NOT NULL");
-      if (newSql.toLowerCase() === (formatExistingType(c) + " " + (c.isNullable === "YES" ? "NULL" : "NOT NULL")).toLowerCase()) {
-        warns.push(`${c.columnName}: no change detected (${before}).`);
-      }
-      const oldGroup = groupOf(c.dataType);
-      const newGroup = groupOf(spec.baseType);
-      if (oldGroup !== newGroup) {
-        warns.push(`${c.columnName}: incompatible type change ${c.dataType} → ${spec.baseType}. Data conversion may fail or lose precision.`);
-      }
-      if (TEXT_GROUP.has(c.dataType) && TEXT_GROUP.has(spec.baseType)) {
-        const oldLen = c.charMaxLength ?? 0;
-        const newLen = spec.length.toUpperCase() === "MAX" ? Number.MAX_SAFE_INTEGER : Number(spec.length) || 0;
-        if (oldLen === -1 && newLen !== Number.MAX_SAFE_INTEGER) {
-          warns.push(`${c.columnName}: shrinking MAX → ${spec.length} may truncate existing data.`);
-        } else if (newLen < oldLen) {
-          warns.push(`${c.columnName}: shrinking length ${oldLen} → ${newLen} may truncate existing data.`);
-        }
-      }
-      if (c.isPrimaryKey) {
-        warns.push(`${c.columnName}: column is part of the primary key. ALTER may fail without dropping the PK first.`);
-      }
-      stmts.push(`ALTER TABLE ${tableRef} ALTER COLUMN ${quote(c.columnName)} ${newSql};`);
-    }
-
-    setCheckingDeps(true);
     const depMsgs: string[] = [];
+    setCheckingDeps(true);
+
     try {
-      for (const c of picked) {
-        const dep = await erp.getColumnDependencies({
-          schema: selectedTable.schema,
-          table: selectedTable.name,
-          column: c.columnName,
-        }) as ColumnDependencies;
-        const refs: string[] = [];
-        if (dep.foreignKeys.length) refs.push(`${dep.foreignKeys.length} foreign key(s)`);
-        const nonPkIdx = dep.indexes.filter((i) => !i.isPrimaryKey);
-        if (nonPkIdx.length) refs.push(`${nonPkIdx.length} index(es)`);
-        if (refs.length) {
-          depMsgs.push(`${c.columnName} is referenced by ${refs.join(", ")}.`);
+      for (const t of selectedTables) {
+        const cols = tableColumns[tableKey(t)] || [];
+        const picked = cols.filter((c) => rows[rowKey(t, c.columnName)]?.selected);
+        if (!picked.length) continue;
+        const tableRef = `${quote(t.schema)}.${quote(t.name)}`;
+
+        for (const c of picked) {
+          const spec = rows[rowKey(t, c.columnName)].spec;
+          const newSql = specToSql(spec);
+          const before = formatExistingType(c) + (c.isNullable === "YES" ? " NULL" : " NOT NULL");
+          const cur = formatExistingType(c) + " " + (c.isNullable === "YES" ? "NULL" : "NOT NULL");
+          const label = `${t.schema}.${t.name}.${c.columnName}`;
+          if (newSql.toLowerCase() === cur.toLowerCase()) {
+            warns.push(`${label}: no change detected (${before}).`);
+          }
+          if (groupOf(c.dataType) !== groupOf(spec.baseType)) {
+            warns.push(`${label}: incompatible type change ${c.dataType} → ${spec.baseType}. Data conversion may fail or lose precision.`);
+          }
+          if (TEXT_GROUP.has(c.dataType) && TEXT_GROUP.has(spec.baseType)) {
+            const oldLen = c.charMaxLength ?? 0;
+            const newLen = spec.length.toUpperCase() === "MAX" ? Number.MAX_SAFE_INTEGER : Number(spec.length) || 0;
+            if (oldLen === -1 && newLen !== Number.MAX_SAFE_INTEGER) {
+              warns.push(`${label}: shrinking MAX → ${spec.length} may truncate existing data.`);
+            } else if (newLen < oldLen) {
+              warns.push(`${label}: shrinking length ${oldLen} → ${newLen} may truncate existing data.`);
+            }
+          }
+          if (c.isPrimaryKey) {
+            warns.push(`${label}: column is part of the primary key. ALTER may fail without dropping the PK first.`);
+          }
+          stmts.push(`ALTER TABLE ${tableRef} ALTER COLUMN ${quote(c.columnName)} ${newSql};`);
+
+          try {
+            const dep = await erp.getColumnDependencies({
+              schema: t.schema, table: t.name, column: c.columnName,
+            }) as ColumnDependencies;
+            const refs: string[] = [];
+            if (dep.foreignKeys.length) refs.push(`${dep.foreignKeys.length} foreign key(s)`);
+            const nonPkIdx = dep.indexes.filter((i) => !i.isPrimaryKey);
+            if (nonPkIdx.length) refs.push(`${nonPkIdx.length} index(es)`);
+            if (refs.length) depMsgs.push(`${label} is referenced by ${refs.join(", ")}.`);
+          } catch (e) {
+            depMsgs.push(`${label}: dependency check failed: ${(e as Error).message}`);
+          }
         }
       }
-    } catch (e) {
-      depMsgs.push(`Dependency check failed: ${(e as Error).message}`);
     } finally {
       setCheckingDeps(false);
     }
 
+    if (!stmts.length) { toast.error("Select at least one column."); return; }
     setPreviewStmts(stmts);
     setPreviewWarnings(warns);
     setDepWarnings(depMsgs);
@@ -217,17 +241,20 @@ export function SchemaManager({ schema, dark }: { schema: SchemaSnapshot; dark: 
       if (r.ok) {
         toast.success(`Applied ${r.executed.length} statement(s) successfully.`);
         setPreviewOpen(false);
-        // Reload columns to reflect new types.
-        if (selectedTable) {
-          const cols = await erp.getTableColumns({ schema: selectedTable.schema, table: selectedTable.name });
-          setColumns(cols);
-          setRows((prev) => {
-            const next = { ...prev };
-            cols.forEach((c) => {
-              if (next[c.columnName]) next[c.columnName] = { ...next[c.columnName], selected: false };
+        // Reload columns for all selected tables.
+        for (const t of selectedTables) {
+          try {
+            const cols = await erp.getTableColumns({ schema: t.schema, table: t.name });
+            setTableColumns((prev) => ({ ...prev, [tableKey(t)]: cols }));
+            setRows((prev) => {
+              const next = { ...prev };
+              cols.forEach((c) => {
+                const k = rowKey(t, c.columnName);
+                if (next[k]) next[k] = { ...next[k], selected: false };
+              });
+              return next;
             });
-            return next;
-          });
+          } catch { /* ignore */ }
         }
       } else {
         toast.error(`Execution failed: ${r.error}`);
@@ -239,149 +266,165 @@ export function SchemaManager({ schema, dark }: { schema: SchemaSnapshot; dark: 
     }
   };
 
-  const selectedCount = Object.values(rows).filter((r) => r.selected).length;
-
   return (
     <div className="mx-auto max-w-7xl px-4 py-6">
-      <div className="mb-4 flex items-end justify-between gap-4">
+      <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold">Schema Manager</h2>
           <p className="text-xs text-muted-foreground">
-            Inspect table structure and safely alter column data types.
+            Inspect table structure and safely alter column data types. Multiple tables can be selected.
           </p>
         </div>
         <div className="flex items-end gap-2">
-          <div className="w-[320px]">
-            <Label className="mb-1.5 block text-xs font-medium text-muted-foreground">Table</Label>
-            <Select value={selectedKey} onValueChange={setSelectedKey}>
-              <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent className="max-h-[360px]">
-                <SelectItem value="__all__">All Tables</SelectItem>
-                {tables.map((t) => (
-                  <SelectItem key={`${t.schema}.${t.name}`} value={`${t.schema}|${t.name}`}>
-                    {t.schema}.{t.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="w-[360px]">
+            <Label className="mb-1.5 block text-xs font-medium text-muted-foreground">Tables</Label>
+            <TableMultiSelect
+              tables={tables}
+              selected={selectedTables}
+              onChange={setSelectedTables}
+              triggerClassName="w-full"
+              contentWidth={380}
+            />
           </div>
-          <Button onClick={buildPreview} disabled={!selectedTable || !selectedCount || loading || checkingDeps}>
+          <Button
+            onClick={buildPreview}
+            disabled={!selectedTables.length || !selectedCount || checkingDeps}
+          >
             {checkingDeps ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Wand2 className="mr-1.5 h-3.5 w-3.5" />}
             Apply Changes {selectedCount > 0 && `(${selectedCount})`}
           </Button>
         </div>
       </div>
 
-      <Card className="overflow-hidden">
-        {!selectedTable ? (
-          <div className="p-10 text-center text-sm text-muted-foreground">
-            Select a table from the dropdown above to view its columns.
-          </div>
-        ) : loading ? (
-          <div className="flex items-center justify-center p-10 text-muted-foreground">
-            <Loader2 className="h-5 w-5 animate-spin" />
-          </div>
-        ) : !columns?.length ? (
-          <div className="p-10 text-center text-sm text-muted-foreground">No columns found.</div>
-        ) : (
-          <div className="overflow-auto">
-            <table className="w-full border-collapse text-sm">
-              <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
-                <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-                  <th className="w-10 px-3 py-2"></th>
-                  <th className="px-3 py-2 font-medium">Column Name</th>
-                  <th className="px-3 py-2 font-medium">Current Data Type</th>
-                  <th className="px-3 py-2 font-medium">Relationship / Reference</th>
-                  <th className="px-3 py-2 font-medium">New Data Type</th>
-                </tr>
-              </thead>
-              <tbody>
-                {columns.map((c) => {
-                  const row = rows[c.columnName];
-                  if (!row) return null;
-                  const fk = c.fkRefTable
-                    ? `${c.columnName} → ${c.fkRefSchema}.${c.fkRefTable}.${c.fkRefColumn}`
-                    : "Same Table";
-                  const isText = TEXT_GROUP.has(row.spec.baseType) && row.spec.baseType !== "text" && row.spec.baseType !== "ntext";
-                  const isDecimal = row.spec.baseType === "decimal" || row.spec.baseType === "numeric";
-                  return (
-                    <tr key={c.columnName} className="border-b border-border/50 hover:bg-accent/40">
-                      <td className="px-3 py-2 align-middle">
-                        <Checkbox
-                          checked={row.selected}
-                          onCheckedChange={(v) => updateRow(c.columnName, { selected: !!v })}
-                        />
-                      </td>
-                      <td className="px-3 py-2 font-mono text-xs">
-                        {c.isPrimaryKey && <Badge variant="outline" className="mr-1.5 text-[9px]">PK</Badge>}
-                        {c.columnName}
-                      </td>
-                      <td className="px-3 py-2">
-                        <Badge variant="outline" className="font-mono text-[10px]">
-                          {formatExistingType(c)}{c.isNullable === "YES" ? "" : " NOT NULL"}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-2 font-mono text-xs">
-                        {c.fkRefTable ? (
-                          <span className="text-primary">{fk}</span>
-                        ) : (
-                          <span className="text-muted-foreground">Same Table</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <Select
-                            value={row.spec.baseType}
-                            onValueChange={(v) => updateSpec(c.columnName, { baseType: v })}
-                          >
-                            <SelectTrigger className="h-8 w-[140px] text-xs"><SelectValue /></SelectTrigger>
-                            <SelectContent className="max-h-[280px]">
-                              {TYPE_OPTIONS.map((t) => (
-                                <SelectItem key={t} value={t}>{t}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          {isText && (
-                            <Input
-                              value={row.spec.length}
-                              onChange={(e) => updateSpec(c.columnName, { length: e.target.value })}
-                              placeholder="length / MAX"
-                              className="h-8 w-[100px] text-xs"
-                            />
-                          )}
-                          {isDecimal && (
-                            <>
-                              <Input
-                                value={row.spec.precision}
-                                onChange={(e) => updateSpec(c.columnName, { precision: e.target.value })}
-                                placeholder="prec"
-                                className="h-8 w-[70px] text-xs"
-                              />
-                              <Input
-                                value={row.spec.scale}
-                                onChange={(e) => updateSpec(c.columnName, { scale: e.target.value })}
-                                placeholder="scale"
-                                className="h-8 w-[70px] text-xs"
-                              />
-                            </>
-                          )}
-                          <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
-                            <Checkbox
-                              checked={row.spec.nullable}
-                              onCheckedChange={(v) => updateSpec(c.columnName, { nullable: !!v })}
-                            />
-                            NULL
-                          </label>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Card>
+      {selectedTables.length === 0 ? (
+        <Card className="p-10 text-center text-sm text-muted-foreground">
+          Select one or more tables from the filter above to view their columns.
+        </Card>
+      ) : (
+        <div className="space-y-4">
+          {selectedTables.map((t) => {
+            const k = tableKey(t);
+            const cols = tableColumns[k];
+            const isLoading = loadingKeys.has(k);
+            return (
+              <Card key={k} className="overflow-hidden">
+                <div className="flex items-center justify-between border-b border-border bg-muted/30 px-3 py-2">
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    <Badge variant="outline" className="font-mono text-[10px]">{t.schema}</Badge>
+                    <span className="font-mono">{t.name}</span>
+                    {cols && <span className="text-xs text-muted-foreground">{cols.length} columns</span>}
+                  </div>
+                </div>
+                {isLoading || !cols ? (
+                  <div className="flex items-center justify-center p-6 text-muted-foreground">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  </div>
+                ) : cols.length === 0 ? (
+                  <div className="p-6 text-center text-sm text-muted-foreground">No columns found.</div>
+                ) : (
+                  <div className="overflow-auto">
+                    <table className="w-full border-collapse text-sm">
+                      <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
+                        <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+                          <th className="w-10 px-3 py-2"></th>
+                          <th className="px-3 py-2 font-medium">Column Name</th>
+                          <th className="px-3 py-2 font-medium">Current Data Type</th>
+                          <th className="px-3 py-2 font-medium">Relationship / Reference</th>
+                          <th className="px-3 py-2 font-medium">New Data Type</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {cols.map((c) => {
+                          const rk = rowKey(t, c.columnName);
+                          const row = rows[rk];
+                          if (!row) return null;
+                          const fk = c.fkRefTable
+                            ? `${c.columnName} → ${c.fkRefSchema}.${c.fkRefTable}.${c.fkRefColumn}`
+                            : "Same Table";
+                          const isText = TEXT_GROUP.has(row.spec.baseType) && row.spec.baseType !== "text" && row.spec.baseType !== "ntext";
+                          const isDecimal = row.spec.baseType === "decimal" || row.spec.baseType === "numeric";
+                          return (
+                            <tr key={rk} className="border-b border-border/50 hover:bg-accent/40">
+                              <td className="px-3 py-2 align-middle">
+                                <Checkbox
+                                  checked={row.selected}
+                                  onCheckedChange={(v) => updateRow(rk, { selected: !!v })}
+                                />
+                              </td>
+                              <td className="px-3 py-2 font-mono text-xs">
+                                {c.isPrimaryKey && <Badge variant="outline" className="mr-1.5 text-[9px]">PK</Badge>}
+                                {c.columnName}
+                              </td>
+                              <td className="px-3 py-2">
+                                <Badge variant="outline" className="font-mono text-[10px]">
+                                  {formatExistingType(c)}{c.isNullable === "YES" ? "" : " NOT NULL"}
+                                </Badge>
+                              </td>
+                              <td className="px-3 py-2 font-mono text-xs">
+                                {c.fkRefTable ? (
+                                  <span className="text-primary">{fk}</span>
+                                ) : (
+                                  <span className="text-muted-foreground">Same Table</span>
+                                )}
+                              </td>
+                              <td className="px-3 py-2">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <Select
+                                    value={row.spec.baseType}
+                                    onValueChange={(v) => updateSpec(rk, { baseType: v })}
+                                  >
+                                    <SelectTrigger className="h-8 w-[140px] text-xs"><SelectValue /></SelectTrigger>
+                                    <SelectContent className="max-h-[280px]">
+                                      {TYPE_OPTIONS.map((opt) => (
+                                        <SelectItem key={opt} value={opt}>{opt}</SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                  {isText && (
+                                    <Input
+                                      value={row.spec.length}
+                                      onChange={(e) => updateSpec(rk, { length: e.target.value })}
+                                      placeholder="length / MAX"
+                                      className="h-8 w-[100px] text-xs"
+                                    />
+                                  )}
+                                  {isDecimal && (
+                                    <>
+                                      <Input
+                                        value={row.spec.precision}
+                                        onChange={(e) => updateSpec(rk, { precision: e.target.value })}
+                                        placeholder="prec"
+                                        className="h-8 w-[70px] text-xs"
+                                      />
+                                      <Input
+                                        value={row.spec.scale}
+                                        onChange={(e) => updateSpec(rk, { scale: e.target.value })}
+                                        placeholder="scale"
+                                        className="h-8 w-[70px] text-xs"
+                                      />
+                                    </>
+                                  )}
+                                  <label className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                                    <Checkbox
+                                      checked={row.spec.nullable}
+                                      onCheckedChange={(v) => updateSpec(rk, { nullable: !!v })}
+                                    />
+                                    NULL
+                                  </label>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </Card>
+            );
+          })}
+        </div>
+      )}
 
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
         <DialogContent className="max-w-3xl">
