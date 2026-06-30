@@ -2,8 +2,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Database, Loader2, Plug, PlugZap, Search, X, Download, FileSpreadsheet,
   Table as TableIcon, Eye, AlertTriangle, CheckCircle2, Moon, Sun, StopCircle,
-  LayoutDashboard, Wrench, ShieldCheck,
+  LayoutDashboard, Wrench, ShieldCheck, History, Save,
 } from "lucide-react";
+import { PasswordInput } from "./PasswordInput";
+import {
+  ConnectionHistoryDialog, upsertHistoryRecord, loadHistory,
+} from "./ConnectionHistory";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
