@@ -187,6 +187,9 @@ function ConnectionPanel(props: {
 }) {
   const { cfg, setCfg, phase, setPhase, onConnected } = props;
   const [testing, setTesting] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [saveCode, setSaveCode] = useState("");
 
   const setField = <K extends keyof ConnectionConfig>(k: K, v: ConnectionConfig[K]) =>
     setCfg({ ...cfg, [k]: v });
@@ -224,6 +227,30 @@ function ConnectionPanel(props: {
     }
   };
 
+  const openSaveDialog = () => {
+    setSaveCode(cfg.database || "");
+    setSaveOpen(true);
+  };
+
+  const confirmSave = () => {
+    const code = saveCode.trim();
+    if (!code) { toast.error("DB Code is required."); return; }
+    const existing = loadHistory().find(
+      (r) => r.dbCode.toLowerCase() === code.toLowerCase(),
+    );
+    if (existing) {
+      toast.error(`DB Code "${code}" already exists. Edit it from Connection History.`);
+      return;
+    }
+    const r = upsertHistoryRecord({ dbCode: code, cfg, updatedAt: Date.now() });
+    if (r.ok) {
+      toast.success(`Saved as "${code}"`);
+      setSaveOpen(false);
+    } else {
+      toast.error(r.error ?? "Failed to save.");
+    }
+  };
+
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4 px-4 py-10">
       <div className="text-center">
@@ -233,6 +260,11 @@ function ConnectionPanel(props: {
         </p>
       </div>
       <Card className="p-5">
+        <div className="mb-3 flex justify-end">
+          <Button variant="outline" size="sm" onClick={() => setHistoryOpen(true)}>
+            <History className="mr-1.5 h-3.5 w-3.5" /> Connection History
+          </Button>
+        </div>
         <div className="grid grid-cols-2 gap-3">
           <Field label="Server Name" className="col-span-2">
             <Input value={cfg.server} onChange={(e) => setField("server", e.target.value)} placeholder="localhost\\SQLEXPRESS or 10.0.0.5" />
@@ -247,7 +279,7 @@ function ConnectionPanel(props: {
             <Input value={cfg.user} onChange={(e) => setField("user", e.target.value)} autoComplete="off" />
           </Field>
           <Field label="Password">
-            <Input type="password" value={cfg.password} onChange={(e) => setField("password", e.target.value)} autoComplete="off" />
+            <PasswordInput value={cfg.password} onChange={(e) => setField("password", e.target.value)} autoComplete="off" />
           </Field>
           <label className="col-span-2 flex items-center gap-2 text-sm">
             <Checkbox checked={!!cfg.encrypt} onCheckedChange={(v) => setField("encrypt", !!v)} />
@@ -255,10 +287,13 @@ function ConnectionPanel(props: {
           </label>
         </div>
         <Separator className="my-4" />
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={test} disabled={testing || phase === "connecting"}>
             {testing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />}
             Test Connection
+          </Button>
+          <Button variant="outline" onClick={openSaveDialog} disabled={phase === "connecting"}>
+            <Save className="mr-1.5 h-3.5 w-3.5" /> Save to History
           </Button>
           <Button onClick={connect} disabled={phase === "connecting"} className="flex-1">
             {phase === "connecting" ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <PlugZap className="mr-1.5 h-3.5 w-3.5" />}
@@ -282,6 +317,38 @@ npm run electron:dev`}</code></pre>
           </div>
         </Card>
       )}
+
+      <ConnectionHistoryDialog
+        open={historyOpen}
+        onOpenChange={setHistoryOpen}
+        currentCfg={cfg}
+        onSelect={(c) => setCfg(c)}
+      />
+
+      <Dialog open={saveOpen} onOpenChange={setSaveOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Save Connection</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label className="text-xs text-muted-foreground">DB Code (unique identifier)</Label>
+            <Input
+              value={saveCode}
+              autoFocus
+              onChange={(e) => setSaveCode(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") confirmSave(); }}
+              placeholder="PROD-01"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Each saved connection must have a unique DB Code. Use Connection History to edit or delete.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSaveOpen(false)}>Cancel</Button>
+            <Button onClick={confirmSave}>Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
