@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, ShieldCheck, StopCircle, Download, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
@@ -6,12 +6,10 @@ import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from "@/components/ui/select";
 import { toast } from "sonner";
 import { getErp } from "@/lib/erp/client";
-import type { SchemaSnapshot, HealthCheckViolation } from "@/lib/erp/types";
+import { TableMultiSelect } from "./TableMultiSelect";
+import type { SchemaSnapshot, HealthCheckViolation, TableInfo } from "@/lib/erp/types";
 
 const ALL_TABLES = "__all__";
 
