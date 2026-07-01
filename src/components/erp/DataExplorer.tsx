@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Play, Save, FolderOpen, Trash2, Download, Copy, Plus, X, Table as TableIcon, Loader2, Link2,
+  Play, Save, FolderOpen, Trash2, Download, Copy, Plus, X, Table as TableIcon, Loader2, Link2, Columns, Eye, EyeOff, GripVertical,
 } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
