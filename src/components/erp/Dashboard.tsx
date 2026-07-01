@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Server, HardDrive, Wrench, Loader2, AlertTriangle, RefreshCw,
-  Database as DatabaseIcon, StopCircle, CheckCircle2, XCircle,
+  Database as DatabaseIcon, StopCircle, CheckCircle2, XCircle, FileText,
 } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import { Card } from "@/components/ui/card";
@@ -21,6 +21,8 @@ import type {
 
 const USED_COLOR = "#eab308"; // yellow
 const FREE_COLOR = "#3b82f6"; // blue
+const LOG_USED_COLOR = "#f97316"; // orange
+const LOG_FREE_COLOR = "#10b981"; // green
 
 
 type MaintLogEntry = MaintenanceProgress & { ts: number };
@@ -28,7 +30,10 @@ type MaintLogEntry = MaintenanceProgress & { ts: number };
 export function Dashboard({ dark }: { dark: boolean }) {
   const [info, setInfo] = useState<ServerInfo | null>(null);
   const [size, setSize] = useState<DatabaseSize | null>(null);
+  const [logSize, setLogSize] = useState<DatabaseSize | null>(null);
   const [loading, setLoading] = useState(false);
+  const [reloadingStorage, setReloadingStorage] = useState(false);
+  const [reloadingLog, setReloadingLog] = useState(false);
 
   const [shrinking, setShrinking] = useState(false);
   const [askShrink, setAskShrink] = useState(false);
@@ -39,14 +44,45 @@ export function Dashboard({ dark }: { dark: boolean }) {
   const [askMaint, setAskMaint] = useState(false);
   const offRef = useRef<(() => void) | null>(null);
 
+  const reloadStorage = async () => {
+    const erp = getErp();
+    if (!erp) return;
+    setReloadingStorage(true);
+    try {
+      setSize(await erp.getDatabaseSize());
+    } catch (e) {
+      toast.error(`Storage reload failed: ${(e as Error).message}`);
+    } finally {
+      setReloadingStorage(false);
+    }
+  };
+
+  const reloadLog = async () => {
+    const erp = getErp();
+    if (!erp?.getLogSize) return;
+    setReloadingLog(true);
+    try {
+      setLogSize(await erp.getLogSize());
+    } catch (e) {
+      toast.error(`Log reload failed: ${(e as Error).message}`);
+    } finally {
+      setReloadingLog(false);
+    }
+  };
+
   const refresh = async () => {
     const erp = getErp();
     if (!erp) return;
     setLoading(true);
     try {
-      const [i, s] = await Promise.all([erp.getServerInfo(), erp.getDatabaseSize()]);
+      const [i, s, l] = await Promise.all([
+        erp.getServerInfo(),
+        erp.getDatabaseSize(),
+        erp.getLogSize ? erp.getLogSize().catch(() => null) : Promise.resolve(null),
+      ]);
       setInfo(i);
       setSize(s);
+      if (l) setLogSize(l);
     } catch (e) {
       toast.error(`Dashboard load failed: ${(e as Error).message}`);
     } finally {
@@ -138,53 +174,71 @@ export function Dashboard({ dark }: { dark: boolean }) {
 
         {/* Storage */}
         <Card className="p-4">
-          <div className="mb-3 flex items-center gap-2">
-            <HardDrive className="h-4 w-4 text-primary" />
-            <h2 className="text-sm font-semibold">Database Storage</h2>
-          </div>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-[280px_1fr]">
-            <div className="relative h-[220px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={pieData}
-                    dataKey="value"
-                    innerRadius={55}
-                    outerRadius={90}
-                    paddingAngle={2}
-                    stroke="none"
-                  >
-                    {pieData.map((entry, i) => (
-                      <Cell key={i} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <Tooltip
-                    formatter={(v: number) => `${v.toFixed(2)} MB`}
-                    contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", fontSize: 12 }}
-                    itemStyle={{ color: dark ? "#ffffff" : "#000000" }}
-                    labelStyle={{ color: dark ? "#ffffff" : "#000000" }}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-                <div className="text-xs text-muted-foreground">Used</div>
-                <div className="text-xl font-semibold">{usedPct.toFixed(1)}%</div>
-              </div>
+          <div className="mb-3 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <HardDrive className="h-4 w-4 text-primary" />
+              <h2 className="text-sm font-semibold">Database Storage</h2>
             </div>
-            <div className="flex flex-col gap-3">
-              <div className="flex items-center gap-4 text-xs">
-                <LegendDot color={USED_COLOR} label={`Used ${usedPct.toFixed(1)}%`} />
-                <LegendDot color={FREE_COLOR} label={`Unused ${freePct.toFixed(1)}%`} />
-              </div>
-              <Separator />
-              <div className="grid grid-cols-3 gap-3">
-                <SizeStat label="Total" mb={total} />
-                <SizeStat label="Used" mb={used} accent />
-                <SizeStat label="Free" mb={free} />
-              </div>
-            </div>
+            <Button variant="ghost" size="sm" onClick={reloadStorage} disabled={reloadingStorage}>
+              {reloadingStorage
+                ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
+              Reload
+            </Button>
           </div>
+          <StorageBlock
+            pieData={pieData}
+            usedColor={USED_COLOR}
+            freeColor={FREE_COLOR}
+            usedPct={usedPct}
+            freePct={freePct}
+            total={total}
+            used={used}
+            free={free}
+            dark={dark}
+          />
         </Card>
+
+        {/* Transaction Log Storage */}
+        <Card className="p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <FileText className="h-4 w-4 text-primary" />
+              <h2 className="text-sm font-semibold">Transaction Log Storage</h2>
+            </div>
+            <Button variant="ghost" size="sm" onClick={reloadLog} disabled={reloadingLog}>
+              {reloadingLog
+                ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
+              Reload
+            </Button>
+          </div>
+          {(() => {
+            const lu = logSize?.usedMB ?? 0;
+            const lf = logSize?.freeMB ?? 0;
+            const lt = logSize?.totalMB ?? 0;
+            const lup = lt ? (lu / lt) * 100 : 0;
+            const lfp = lt ? (lf / lt) * 100 : 0;
+            const logPie = [
+              { name: "Used", value: Math.max(lu, 0.0001), color: LOG_USED_COLOR },
+              { name: "Free", value: Math.max(lf, 0.0001), color: LOG_FREE_COLOR },
+            ];
+            return (
+              <StorageBlock
+                pieData={logPie}
+                usedColor={LOG_USED_COLOR}
+                freeColor={LOG_FREE_COLOR}
+                usedPct={lup}
+                freePct={lfp}
+                total={lt}
+                used={lu}
+                free={lf}
+                dark={dark}
+              />
+            );
+          })()}
+        </Card>
+
 
         {/* Maintenance */}
         <Card className="p-4">
@@ -329,6 +383,61 @@ function SizeStat({ label, mb, accent }: { label: string; mb: number; accent?: b
       <div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div>
       <div className="mt-1 font-mono text-sm font-semibold">{mb.toFixed(2)} MB</div>
       <div className="font-mono text-[11px] text-muted-foreground">{gb.toFixed(3)} GB</div>
+    </div>
+  );
+}
+
+function StorageBlock({
+  pieData, usedColor, freeColor, usedPct, freePct, total, used, free, dark,
+}: {
+  pieData: { name: string; value: number; color: string }[];
+  usedColor: string; freeColor: string;
+  usedPct: number; freePct: number;
+  total: number; used: number; free: number;
+  dark: boolean;
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-[280px_1fr]">
+      <div className="relative h-[220px]">
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie
+              data={pieData}
+              dataKey="value"
+              innerRadius={55}
+              outerRadius={90}
+              paddingAngle={2}
+              stroke="none"
+            >
+              {pieData.map((entry, i) => (
+                <Cell key={i} fill={entry.color} />
+              ))}
+            </Pie>
+            <Tooltip
+              formatter={(v: number) => `${v.toFixed(2)} MB`}
+              contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", fontSize: 12 }}
+              itemStyle={{ color: dark ? "#ffffff" : "#000000" }}
+              labelStyle={{ color: dark ? "#ffffff" : "#000000" }}
+            />
+          </PieChart>
+        </ResponsiveContainer>
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+          <div className="text-xs text-muted-foreground">Used</div>
+          <div className="text-xl font-semibold">{usedPct.toFixed(1)}%</div>
+        </div>
+      </div>
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-4 text-xs">
+          <LegendDot color={usedColor} label={`Used ${usedPct.toFixed(1)}%`} />
+          <LegendDot color={freeColor} label={`Unused ${freePct.toFixed(1)}%`} />
+        </div>
+        <Separator />
+        <div className="grid grid-cols-3 gap-3">
+          <SizeStat label="Total" mb={total} />
+          <SizeStat label="Used" mb={used} accent />
+          <SizeStat label="Free" mb={free} />
+        </div>
+      </div>
     </div>
   );
 }

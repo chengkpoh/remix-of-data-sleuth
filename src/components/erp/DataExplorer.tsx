@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Play, Save, FolderOpen, Trash2, Download, Copy, Plus, X, Table as TableIcon, Loader2, Link2,
+  Play, Save, FolderOpen, Trash2, Download, Copy, Plus, X, Table as TableIcon, Loader2, Link2, Columns, Eye, EyeOff, GripVertical,
 } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -105,10 +106,15 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
   const [running, setRunning] = useState(false);
   const [resultCols, setResultCols] = useState<string[]>([]);
   const [resultRows, setResultRows] = useState<Record<string, unknown>[]>([]);
+  const [colOrder, setColOrder] = useState<string[]>([]);
+  const [hiddenCols, setHiddenCols] = useState<Set<string>>(new Set());
+  const [colWidths, setColWidths] = useState<Record<string, number>>({});
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
+  const dragColRef = useRef<string | null>(null);
+  const resizeRef = useRef<{ col: string; startX: number; startW: number } | null>(null);
 
   const [loadOpen, setLoadOpen] = useState(false);
   const [savedList, setSavedList] = useState<SavedQuery[]>([]);
@@ -163,9 +169,12 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
   const colInfo = (alias: string, column: string) =>
     aliasColumns.find((c) => c.alias === alias && c.column === column);
 
-  // Auto-detect joins when 2+ tables are selected
+  // Auto-detect joins when 2+ tables are selected (preserve manual)
   useEffect(() => {
-    if (selected.length < 2 || !foreignKeys.length) return;
+    if (selected.length < 2 || !foreignKeys.length) {
+      setJoins((prev) => prev.filter((j) => j.source === "manual"));
+      return;
+    }
     const detected: DataExplorerJoin[] = [];
     for (const a of selected) {
       for (const b of selected) {
@@ -184,11 +193,13 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
           if (!exists) detected.push({
             leftAlias: a.alias, leftColumn: fk.parentColumn,
             rightAlias: b.alias, rightColumn: fk.refColumn,
+            joinType: "LEFT",
+            source: "auto",
           });
         }
       }
     }
-    setJoins(detected);
+    setJoins((prev) => [...detected, ...prev.filter((j) => j.source === "manual")]);
   }, [selected, foreignKeys]);
 
   const addCondition = () => {
@@ -231,6 +242,9 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
         ? res.columns
         : (res.rows[0] ? Object.keys(res.rows[0]) : []);
       setResultCols(cols);
+      setColOrder(cols);
+      setHiddenCols(new Set());
+      setColWidths({});
       setResultRows(res.rows);
       setPage(1);
       toast.success(`${res.rows.length} row(s) in ${res.durationMs}ms`);
@@ -327,6 +341,51 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
     ].join("\n");
     await navigator.clipboard.writeText(text);
     toast.success("Copied to clipboard");
+  };
+
+  // ---- Column customization helpers ----
+  const visibleCols = useMemo(
+    () => colOrder.filter((c) => !hiddenCols.has(c)),
+    [colOrder, hiddenCols],
+  );
+  const hideCol = (c: string) => setHiddenCols((s) => new Set(s).add(c));
+  const showCol = (c: string) => setHiddenCols((s) => {
+    const n = new Set(s); n.delete(c); return n;
+  });
+  const onHeaderDragStart = (c: string) => (e: React.DragEvent) => {
+    dragColRef.current = c;
+    e.dataTransfer.effectAllowed = "move";
+  };
+  const onHeaderDrop = (target: string) => (e: React.DragEvent) => {
+    e.preventDefault();
+    const src = dragColRef.current;
+    dragColRef.current = null;
+    if (!src || src === target) return;
+    setColOrder((order) => {
+      const next = order.filter((x) => x !== src);
+      const idx = next.indexOf(target);
+      next.splice(idx, 0, src);
+      return next;
+    });
+  };
+  const startResize = (c: string) => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startW = colWidths[c] ?? 160;
+    resizeRef.current = { col: c, startX: e.clientX, startW };
+    const move = (ev: MouseEvent) => {
+      const r = resizeRef.current;
+      if (!r) return;
+      const w = Math.max(60, r.startW + (ev.clientX - r.startX));
+      setColWidths((cw) => ({ ...cw, [r.col]: w }));
+    };
+    const up = () => {
+      resizeRef.current = null;
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
   };
 
   // ===== render =====
@@ -546,32 +605,125 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
           </div>
 
           {/* Join builder */}
-          {selected.length >= 2 && (
+          {selected.length >= 1 && (
             <div className="mt-3 rounded-md border border-border bg-background/60 p-3">
               <div className="mb-2 flex items-center gap-2">
                 <Link2 className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="text-xs font-medium">Join Builder</span>
                 <Badge variant="outline" className="text-[10px]">Auto Detect Joins</Badge>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="ml-auto h-7 text-xs"
+                  disabled={selected.length < 2}
+                  onClick={() => {
+                    const l = selected[0], r = selected[1];
+                    if (!l || !r) return;
+                    setJoins((js) => [
+                      ...js,
+                      {
+                        leftAlias: l.alias, leftColumn: "",
+                        rightAlias: r.alias, rightColumn: "",
+                        joinType: "INNER", source: "manual",
+                      },
+                    ]);
+                  }}
+                >
+                  <Plus className="mr-1 h-3 w-3" /> Add Manual Join
+                </Button>
               </div>
               {joins.length === 0 && (
                 <div className="text-[11px] text-muted-foreground italic">
-                  No foreign-key relationships detected between selected tables.
+                  No joins yet. Auto-detected joins appear here when tables share foreign keys.
                 </div>
               )}
-              {joins.map((j, i) => (
-                <div key={i} className="flex items-center gap-2 py-1 text-xs">
-                  <Badge variant="secondary" className="font-mono">{j.leftAlias}.{j.leftColumn}</Badge>
-                  <span className="text-muted-foreground">=</span>
-                  <Badge variant="secondary" className="font-mono">{j.rightAlias}.{j.rightColumn}</Badge>
-                  <button
-                    onClick={() => setJoins((js) => js.filter((_, idx) => idx !== i))}
-                    className="ml-auto text-muted-foreground hover:text-destructive"
-                  ><X className="h-3 w-3" /></button>
-                </div>
-              ))}
+              <div className="space-y-1.5">
+                {joins.map((j, i) => {
+                  const isManual = j.source === "manual";
+                  const leftCols = aliasColumns.filter((c) => c.alias === j.leftAlias);
+                  const rightCols = aliasColumns.filter((c) => c.alias === j.rightAlias);
+                  const patch = (p: Partial<DataExplorerJoin>) =>
+                    setJoins((js) => js.map((x, idx) => (idx === i ? { ...x, ...p } : x)));
+                  return (
+                    <div key={i} className="flex flex-wrap items-center gap-1.5 rounded border border-border/60 bg-background/40 px-2 py-1.5 text-xs">
+                      <Badge variant={isManual ? "default" : "secondary"} className="text-[10px]">
+                        {isManual ? "MANUAL" : "AUTO"}
+                      </Badge>
+                      {isManual ? (
+                        <>
+                          <Select value={j.leftAlias} onValueChange={(v) => patch({ leftAlias: v, leftColumn: "" })}>
+                            <SelectTrigger className="h-7 w-[90px] text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {selected.map((s) => (
+                                <SelectItem key={s.alias} value={s.alias}>{s.alias}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Select value={j.leftColumn} onValueChange={(v) => patch({ leftColumn: v })}>
+                            <SelectTrigger className="h-7 w-[140px] text-xs"><SelectValue placeholder="col" /></SelectTrigger>
+                            <SelectContent>
+                              {leftCols.map((c) => (
+                                <SelectItem key={c.column} value={c.column}>{c.column}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Select value={j.joinType || "INNER"} onValueChange={(v) => patch({ joinType: v as DataExplorerJoin["joinType"] })}>
+                            <SelectTrigger className="h-7 w-[110px] text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="INNER">INNER JOIN</SelectItem>
+                              <SelectItem value="LEFT">LEFT JOIN</SelectItem>
+                              <SelectItem value="RIGHT">RIGHT JOIN</SelectItem>
+                              <SelectItem value="FULL">FULL OUTER</SelectItem>
+                              <SelectItem value="CROSS">CROSS JOIN</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Select value={j.rightAlias} onValueChange={(v) => patch({ rightAlias: v, rightColumn: "" })}>
+                            <SelectTrigger className="h-7 w-[90px] text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {selected.map((s) => (
+                                <SelectItem key={s.alias} value={s.alias}>{s.alias}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {j.joinType !== "CROSS" && (
+                            <Select value={j.rightColumn} onValueChange={(v) => patch({ rightColumn: v })}>
+                              <SelectTrigger className="h-7 w-[140px] text-xs"><SelectValue placeholder="col" /></SelectTrigger>
+                              <SelectContent>
+                                {rightCols.map((c) => (
+                                  <SelectItem key={c.column} value={c.column}>{c.column}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <Badge variant="secondary" className="font-mono">{j.leftAlias}.{j.leftColumn}</Badge>
+                          <Select value={j.joinType || "LEFT"} onValueChange={(v) => patch({ joinType: v as DataExplorerJoin["joinType"] })}>
+                            <SelectTrigger className="h-7 w-[110px] text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="INNER">INNER JOIN</SelectItem>
+                              <SelectItem value="LEFT">LEFT JOIN</SelectItem>
+                              <SelectItem value="RIGHT">RIGHT JOIN</SelectItem>
+                              <SelectItem value="FULL">FULL OUTER</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Badge variant="secondary" className="font-mono">{j.rightAlias}.{j.rightColumn}</Badge>
+                        </>
+                      )}
+                      <button
+                        onClick={() => setJoins((js) => js.filter((_, idx) => idx !== i))}
+                        className="ml-auto text-muted-foreground hover:text-destructive"
+                        title="Delete join"
+                      ><X className="h-3.5 w-3.5" /></button>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>
+
 
         {/* Results */}
         <div className="flex items-center justify-between border-b border-border bg-background px-4 py-2 text-xs">
@@ -583,6 +735,52 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
             <Button variant="ghost" size="sm" onClick={copyResults} disabled={!resultRows.length}>
               <Copy className="mr-1.5 h-3.5 w-3.5" /> Copy
             </Button>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="sm" disabled={!resultCols.length}>
+                  <Columns className="mr-1.5 h-3.5 w-3.5" /> Columns
+                  {hiddenCols.size > 0 && (
+                    <Badge variant="secondary" className="ml-1.5 text-[10px]">{hiddenCols.size} hidden</Badge>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-72 p-2">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold">Column Chooser</span>
+                  <button
+                    className="text-[11px] text-primary hover:underline"
+                    onClick={() => { setHiddenCols(new Set()); setColOrder(resultCols); }}
+                  >Reset</button>
+                </div>
+                <ScrollArea className="max-h-64">
+                  <div className="space-y-1">
+                    {resultCols.map((c) => {
+                      const hidden = hiddenCols.has(c);
+                      return (
+                        <div
+                          key={c}
+                          className="flex items-center justify-between gap-2 rounded border border-border/50 bg-background/60 px-2 py-1 text-xs"
+                          draggable={hidden}
+                          onDragStart={hidden ? onHeaderDragStart(c) : undefined}
+                        >
+                          <span className="truncate font-mono">{c}</span>
+                          <button
+                            onClick={() => (hidden ? showCol(c) : hideCol(c))}
+                            className="text-muted-foreground hover:text-foreground"
+                            title={hidden ? "Show column" : "Hide column"}
+                          >
+                            {hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </ScrollArea>
+                <div className="mt-2 text-[10px] text-muted-foreground">
+                  Drag hidden columns onto a grid header to restore. Drag grid headers to reorder.
+                </div>
+              </PopoverContent>
+            </Popover>
           </div>
           <div className="flex items-center gap-2 text-muted-foreground">
             <span>Show</span>
@@ -602,19 +800,42 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
               No results yet — build conditions and click "Run Query".
             </div>
           ) : (
-            <table className="w-full border-collapse text-xs">
+            <table className="w-full border-collapse text-xs" style={{ tableLayout: "fixed" }}>
               <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
                 <tr className="border-b border-border text-left">
-                  {resultCols.map((c) => (
+                  {visibleCols.map((c) => (
                     <th
                       key={c}
-                      onClick={() => {
-                        if (sortKey === c) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-                        else { setSortKey(c); setSortDir("asc"); }
-                      }}
-                      className="cursor-pointer px-3 py-2 font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground"
+                      draggable
+                      onDragStart={onHeaderDragStart(c)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={onHeaderDrop(c)}
+                      style={{ width: colWidths[c] ?? 160, position: "relative" }}
+                      className="group px-3 py-2 font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground select-none"
                     >
-                      {c}{sortKey === c ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                      <div className="flex items-center gap-1">
+                        <GripVertical className="h-3 w-3 opacity-40 group-hover:opacity-100 cursor-grab" />
+                        <button
+                          className="flex-1 text-left"
+                          onClick={() => {
+                            if (sortKey === c) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                            else { setSortKey(c); setSortDir("asc"); }
+                          }}
+                        >
+                          {c}{sortKey === c ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                        </button>
+                        <button
+                          onClick={() => hideCol(c)}
+                          className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"
+                          title="Hide column"
+                        >
+                          <EyeOff className="h-3 w-3" />
+                        </button>
+                      </div>
+                      <span
+                        onMouseDown={startResize(c)}
+                        className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/40"
+                      />
                     </th>
                   ))}
                 </tr>
@@ -622,8 +843,12 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
               <tbody>
                 {pageRows.map((r, i) => (
                   <tr key={i} className="border-b border-border/50 hover:bg-accent/30">
-                    {resultCols.map((c) => (
-                      <td key={c} className="px-3 py-1.5 font-mono whitespace-nowrap">
+                    {visibleCols.map((c) => (
+                      <td
+                        key={c}
+                        style={{ width: colWidths[c] ?? 160 }}
+                        className="px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis"
+                      >
                         {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
                       </td>
                     ))}
@@ -633,6 +858,7 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
             </table>
           )}
         </div>
+
 
         {resultRows.length > 0 && (
           <div className="flex items-center justify-between border-t border-border bg-card/30 px-4 py-2 text-xs">

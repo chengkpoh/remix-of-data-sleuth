@@ -265,6 +265,21 @@ function registerIpc(mainWindow) {
     return { totalMB, usedMB, freeMB };
   });
 
+  // ---------------- Dashboard: transaction log storage ----------------
+  ipcMain.handle("erp:getLogSize", async () => {
+    if (!pool) throw new Error("Not connected");
+    const r = await pool.request().query(`
+      SELECT
+        CAST(total_log_size_in_bytes / 1048576.0 AS float) AS TotalMB,
+        CAST(used_log_space_in_bytes  / 1048576.0 AS float) AS UsedMB
+      FROM sys.dm_db_log_space_usage
+    `);
+    const row = r.recordset[0] || { TotalMB: 0, UsedMB: 0 };
+    const totalMB = Number(row.TotalMB) || 0;
+    const usedMB  = Number(row.UsedMB)  || 0;
+    const freeMB  = Math.max(0, totalMB - usedMB);
+    return { totalMB, usedMB, freeMB };
+
 
   // ---------------- Maintenance: shrink ----------------
   ipcMain.handle("erp:shrinkDatabase", async () => {
@@ -676,17 +691,26 @@ function registerIpc(mainWindow) {
     const joinedAliases = new Set([firstAlias]);
     // Naive ordered join — assume each join references a previously-joined alias.
     for (const j of joins) {
+      const jt = String(j.joinType || "LEFT").toUpperCase();
+      const t = tableByAlias.get(j.rightAlias);
+      if (!t) throw new Error(`Unknown alias in join: ${j.rightAlias}`);
+      if (jt === "CROSS") {
+        fromParts.push(
+          `CROSS JOIN ${quoteIdent(t.schema)}.${quoteIdent(t.name)} AS ${quoteIdent(t.alias)} WITH (NOLOCK)`,
+        );
+        joinedAliases.add(j.rightAlias);
+        continue;
+      }
       const leftType = colExists(j.leftAlias, j.leftColumn);
       const rightType = colExists(j.rightAlias, j.rightColumn);
       if (!leftType || !rightType) throw new Error(`Invalid join column: ${j.leftAlias}.${j.leftColumn} = ${j.rightAlias}.${j.rightColumn}`);
-      const newAlias = joinedAliases.has(j.leftAlias) ? j.rightAlias : j.leftAlias;
-      const t = tableByAlias.get(newAlias);
-      if (!t) throw new Error(`Unknown alias in join: ${newAlias}`);
+      const allowedTypes = new Set(["INNER", "LEFT", "RIGHT", "FULL"]);
+      const kw = allowedTypes.has(jt) ? (jt === "FULL" ? "FULL OUTER" : jt) : "LEFT";
       fromParts.push(
-        `LEFT JOIN ${quoteIdent(t.schema)}.${quoteIdent(t.name)} AS ${quoteIdent(t.alias)} WITH (NOLOCK) ` +
+        `${kw} JOIN ${quoteIdent(t.schema)}.${quoteIdent(t.name)} AS ${quoteIdent(t.alias)} WITH (NOLOCK) ` +
           `ON ${quoteIdent(j.leftAlias)}.${quoteIdent(j.leftColumn)} = ${quoteIdent(j.rightAlias)}.${quoteIdent(j.rightColumn)}`,
       );
-      joinedAliases.add(newAlias);
+      joinedAliases.add(j.rightAlias);
     }
 
     // WHERE
