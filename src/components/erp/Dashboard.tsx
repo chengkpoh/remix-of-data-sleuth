@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Server, HardDrive, Wrench, Loader2, AlertTriangle, RefreshCw,
-  Database as DatabaseIcon, StopCircle, CheckCircle2, XCircle,
+  Database as DatabaseIcon, StopCircle, CheckCircle2, XCircle, FileText,
 } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import { Card } from "@/components/ui/card";
