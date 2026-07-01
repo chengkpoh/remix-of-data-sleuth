@@ -174,53 +174,71 @@ export function Dashboard({ dark }: { dark: boolean }) {
 
         {/* Storage */}
         <Card className="p-4">
-          <div className="mb-3 flex items-center gap-2">
-            <HardDrive className="h-4 w-4 text-primary" />
-            <h2 className="text-sm font-semibold">Database Storage</h2>
-          </div>
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-[280px_1fr]">
-            <div className="relative h-[220px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={pieData}
-                    dataKey="value"
-                    innerRadius={55}
-                    outerRadius={90}
-                    paddingAngle={2}
-                    stroke="none"
-                  >
-                    {pieData.map((entry, i) => (
-                      <Cell key={i} fill={entry.color} />
-                    ))}
-                  </Pie>
-                  <Tooltip
-                    formatter={(v: number) => `${v.toFixed(2)} MB`}
-                    contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", fontSize: 12 }}
-                    itemStyle={{ color: dark ? "#ffffff" : "#000000" }}
-                    labelStyle={{ color: dark ? "#ffffff" : "#000000" }}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
-              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
-                <div className="text-xs text-muted-foreground">Used</div>
-                <div className="text-xl font-semibold">{usedPct.toFixed(1)}%</div>
-              </div>
+          <div className="mb-3 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <HardDrive className="h-4 w-4 text-primary" />
+              <h2 className="text-sm font-semibold">Database Storage</h2>
             </div>
-            <div className="flex flex-col gap-3">
-              <div className="flex items-center gap-4 text-xs">
-                <LegendDot color={USED_COLOR} label={`Used ${usedPct.toFixed(1)}%`} />
-                <LegendDot color={FREE_COLOR} label={`Unused ${freePct.toFixed(1)}%`} />
-              </div>
-              <Separator />
-              <div className="grid grid-cols-3 gap-3">
-                <SizeStat label="Total" mb={total} />
-                <SizeStat label="Used" mb={used} accent />
-                <SizeStat label="Free" mb={free} />
-              </div>
-            </div>
+            <Button variant="ghost" size="sm" onClick={reloadStorage} disabled={reloadingStorage}>
+              {reloadingStorage
+                ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
+              Reload
+            </Button>
           </div>
+          <StorageBlock
+            pieData={pieData}
+            usedColor={USED_COLOR}
+            freeColor={FREE_COLOR}
+            usedPct={usedPct}
+            freePct={freePct}
+            total={total}
+            used={used}
+            free={free}
+            dark={dark}
+          />
         </Card>
+
+        {/* Transaction Log Storage */}
+        <Card className="p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <FileText className="h-4 w-4 text-primary" />
+              <h2 className="text-sm font-semibold">Transaction Log Storage</h2>
+            </div>
+            <Button variant="ghost" size="sm" onClick={reloadLog} disabled={reloadingLog}>
+              {reloadingLog
+                ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                : <RefreshCw className="mr-1.5 h-3.5 w-3.5" />}
+              Reload
+            </Button>
+          </div>
+          {(() => {
+            const lu = logSize?.usedMB ?? 0;
+            const lf = logSize?.freeMB ?? 0;
+            const lt = logSize?.totalMB ?? 0;
+            const lup = lt ? (lu / lt) * 100 : 0;
+            const lfp = lt ? (lf / lt) * 100 : 0;
+            const logPie = [
+              { name: "Used", value: Math.max(lu, 0.0001), color: LOG_USED_COLOR },
+              { name: "Free", value: Math.max(lf, 0.0001), color: LOG_FREE_COLOR },
+            ];
+            return (
+              <StorageBlock
+                pieData={logPie}
+                usedColor={LOG_USED_COLOR}
+                freeColor={LOG_FREE_COLOR}
+                usedPct={lup}
+                freePct={lfp}
+                total={lt}
+                used={lu}
+                free={lf}
+                dark={dark}
+              />
+            );
+          })()}
+        </Card>
+
 
         {/* Maintenance */}
         <Card className="p-4">
