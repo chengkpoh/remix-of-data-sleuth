@@ -74,6 +74,7 @@ export interface ErpApi {
   onSearchProgress: (cb: (p: SearchProgress) => void) => () => void;
   getServerInfo: () => Promise<ServerInfo>;
   getDatabaseSize: () => Promise<DatabaseSize>;
+  getLogSize: () => Promise<DatabaseSize>;
   shrinkDatabase: () => Promise<{ ok: boolean; database: string; durationMs: number }>;
   getFragmentation: (p?: { threshold?: number }) => Promise<FragmentationRow[]>;
   runIndexMaintenance: (p?: { threshold?: number }) => Promise<{
