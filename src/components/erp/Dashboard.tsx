@@ -30,7 +30,10 @@ type MaintLogEntry = MaintenanceProgress & { ts: number };
 export function Dashboard({ dark }: { dark: boolean }) {
   const [info, setInfo] = useState<ServerInfo | null>(null);
   const [size, setSize] = useState<DatabaseSize | null>(null);
+  const [logSize, setLogSize] = useState<DatabaseSize | null>(null);
   const [loading, setLoading] = useState(false);
+  const [reloadingStorage, setReloadingStorage] = useState(false);
+  const [reloadingLog, setReloadingLog] = useState(false);
 
   const [shrinking, setShrinking] = useState(false);
   const [askShrink, setAskShrink] = useState(false);
@@ -41,14 +44,45 @@ export function Dashboard({ dark }: { dark: boolean }) {
   const [askMaint, setAskMaint] = useState(false);
   const offRef = useRef<(() => void) | null>(null);
 
+  const reloadStorage = async () => {
+    const erp = getErp();
+    if (!erp) return;
+    setReloadingStorage(true);
+    try {
+      setSize(await erp.getDatabaseSize());
+    } catch (e) {
+      toast.error(`Storage reload failed: ${(e as Error).message}`);
+    } finally {
+      setReloadingStorage(false);
+    }
+  };
+
+  const reloadLog = async () => {
+    const erp = getErp();
+    if (!erp?.getLogSize) return;
+    setReloadingLog(true);
+    try {
+      setLogSize(await erp.getLogSize());
+    } catch (e) {
+      toast.error(`Log reload failed: ${(e as Error).message}`);
+    } finally {
+      setReloadingLog(false);
+    }
+  };
+
   const refresh = async () => {
     const erp = getErp();
     if (!erp) return;
     setLoading(true);
     try {
-      const [i, s] = await Promise.all([erp.getServerInfo(), erp.getDatabaseSize()]);
+      const [i, s, l] = await Promise.all([
+        erp.getServerInfo(),
+        erp.getDatabaseSize(),
+        erp.getLogSize ? erp.getLogSize().catch(() => null) : Promise.resolve(null),
+      ]);
       setInfo(i);
       setSize(s);
+      if (l) setLogSize(l);
     } catch (e) {
       toast.error(`Dashboard load failed: ${(e as Error).message}`);
     } finally {
