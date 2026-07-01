@@ -343,6 +343,51 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
     toast.success("Copied to clipboard");
   };
 
+  // ---- Column customization helpers ----
+  const visibleCols = useMemo(
+    () => colOrder.filter((c) => !hiddenCols.has(c)),
+    [colOrder, hiddenCols],
+  );
+  const hideCol = (c: string) => setHiddenCols((s) => new Set(s).add(c));
+  const showCol = (c: string) => setHiddenCols((s) => {
+    const n = new Set(s); n.delete(c); return n;
+  });
+  const onHeaderDragStart = (c: string) => (e: React.DragEvent) => {
+    dragColRef.current = c;
+    e.dataTransfer.effectAllowed = "move";
+  };
+  const onHeaderDrop = (target: string) => (e: React.DragEvent) => {
+    e.preventDefault();
+    const src = dragColRef.current;
+    dragColRef.current = null;
+    if (!src || src === target) return;
+    setColOrder((order) => {
+      const next = order.filter((x) => x !== src);
+      const idx = next.indexOf(target);
+      next.splice(idx, 0, src);
+      return next;
+    });
+  };
+  const startResize = (c: string) => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startW = colWidths[c] ?? 160;
+    resizeRef.current = { col: c, startX: e.clientX, startW };
+    const move = (ev: MouseEvent) => {
+      const r = resizeRef.current;
+      if (!r) return;
+      const w = Math.max(60, r.startW + (ev.clientX - r.startX));
+      setColWidths((cw) => ({ ...cw, [r.col]: w }));
+    };
+    const up = () => {
+      resizeRef.current = null;
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  };
+
   // ===== render =====
   return (
     <div className="grid grid-cols-[280px_1fr] min-h-[calc(100vh-49px)]">
