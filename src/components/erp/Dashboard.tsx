@@ -386,3 +386,58 @@ function SizeStat({ label, mb, accent }: { label: string; mb: number; accent?: b
     </div>
   );
 }
+
+function StorageBlock({
+  pieData, usedColor, freeColor, usedPct, freePct, total, used, free, dark,
+}: {
+  pieData: { name: string; value: number; color: string }[];
+  usedColor: string; freeColor: string;
+  usedPct: number; freePct: number;
+  total: number; used: number; free: number;
+  dark: boolean;
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-[280px_1fr]">
+      <div className="relative h-[220px]">
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie
+              data={pieData}
+              dataKey="value"
+              innerRadius={55}
+              outerRadius={90}
+              paddingAngle={2}
+              stroke="none"
+            >
+              {pieData.map((entry, i) => (
+                <Cell key={i} fill={entry.color} />
+              ))}
+            </Pie>
+            <Tooltip
+              formatter={(v: number) => `${v.toFixed(2)} MB`}
+              contentStyle={{ background: "hsl(var(--card))", border: "1px solid hsl(var(--border))", fontSize: 12 }}
+              itemStyle={{ color: dark ? "#ffffff" : "#000000" }}
+              labelStyle={{ color: dark ? "#ffffff" : "#000000" }}
+            />
+          </PieChart>
+        </ResponsiveContainer>
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+          <div className="text-xs text-muted-foreground">Used</div>
+          <div className="text-xl font-semibold">{usedPct.toFixed(1)}%</div>
+        </div>
+      </div>
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-4 text-xs">
+          <LegendDot color={usedColor} label={`Used ${usedPct.toFixed(1)}%`} />
+          <LegendDot color={freeColor} label={`Unused ${freePct.toFixed(1)}%`} />
+        </div>
+        <Separator />
+        <div className="grid grid-cols-3 gap-3">
+          <SizeStat label="Total" mb={total} />
+          <SizeStat label="Used" mb={used} accent />
+          <SizeStat label="Free" mb={free} />
+        </div>
+      </div>
+    </div>
+  );
+}
