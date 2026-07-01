@@ -119,6 +119,8 @@ export interface DataExplorerJoin {
   leftColumn: string;
   rightAlias: string;
   rightColumn: string;
+  joinType?: "INNER" | "LEFT" | "RIGHT" | "FULL" | "CROSS";
+  source?: "auto" | "manual";
 }
 
 export interface DataExplorerCondition {
