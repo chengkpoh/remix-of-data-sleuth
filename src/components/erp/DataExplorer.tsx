@@ -735,6 +735,52 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
             <Button variant="ghost" size="sm" onClick={copyResults} disabled={!resultRows.length}>
               <Copy className="mr-1.5 h-3.5 w-3.5" /> Copy
             </Button>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="sm" disabled={!resultCols.length}>
+                  <Columns className="mr-1.5 h-3.5 w-3.5" /> Columns
+                  {hiddenCols.size > 0 && (
+                    <Badge variant="secondary" className="ml-1.5 text-[10px]">{hiddenCols.size} hidden</Badge>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-72 p-2">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold">Column Chooser</span>
+                  <button
+                    className="text-[11px] text-primary hover:underline"
+                    onClick={() => { setHiddenCols(new Set()); setColOrder(resultCols); }}
+                  >Reset</button>
+                </div>
+                <ScrollArea className="max-h-64">
+                  <div className="space-y-1">
+                    {resultCols.map((c) => {
+                      const hidden = hiddenCols.has(c);
+                      return (
+                        <div
+                          key={c}
+                          className="flex items-center justify-between gap-2 rounded border border-border/50 bg-background/60 px-2 py-1 text-xs"
+                          draggable={hidden}
+                          onDragStart={hidden ? onHeaderDragStart(c) : undefined}
+                        >
+                          <span className="truncate font-mono">{c}</span>
+                          <button
+                            onClick={() => (hidden ? showCol(c) : hideCol(c))}
+                            className="text-muted-foreground hover:text-foreground"
+                            title={hidden ? "Show column" : "Hide column"}
+                          >
+                            {hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </ScrollArea>
+                <div className="mt-2 text-[10px] text-muted-foreground">
+                  Drag hidden columns onto a grid header to restore. Drag grid headers to reorder.
+                </div>
+              </PopoverContent>
+            </Popover>
           </div>
           <div className="flex items-center gap-2 text-muted-foreground">
             <span>Show</span>
@@ -754,19 +800,42 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
               No results yet — build conditions and click "Run Query".
             </div>
           ) : (
-            <table className="w-full border-collapse text-xs">
+            <table className="w-full border-collapse text-xs" style={{ tableLayout: "fixed" }}>
               <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
                 <tr className="border-b border-border text-left">
-                  {resultCols.map((c) => (
+                  {visibleCols.map((c) => (
                     <th
                       key={c}
-                      onClick={() => {
-                        if (sortKey === c) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-                        else { setSortKey(c); setSortDir("asc"); }
-                      }}
-                      className="cursor-pointer px-3 py-2 font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground"
+                      draggable
+                      onDragStart={onHeaderDragStart(c)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={onHeaderDrop(c)}
+                      style={{ width: colWidths[c] ?? 160, position: "relative" }}
+                      className="group px-3 py-2 font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground select-none"
                     >
-                      {c}{sortKey === c ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                      <div className="flex items-center gap-1">
+                        <GripVertical className="h-3 w-3 opacity-40 group-hover:opacity-100 cursor-grab" />
+                        <button
+                          className="flex-1 text-left"
+                          onClick={() => {
+                            if (sortKey === c) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                            else { setSortKey(c); setSortDir("asc"); }
+                          }}
+                        >
+                          {c}{sortKey === c ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
+                        </button>
+                        <button
+                          onClick={() => hideCol(c)}
+                          className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"
+                          title="Hide column"
+                        >
+                          <EyeOff className="h-3 w-3" />
+                        </button>
+                      </div>
+                      <span
+                        onMouseDown={startResize(c)}
+                        className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/40"
+                      />
                     </th>
                   ))}
                 </tr>
@@ -774,8 +843,12 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
               <tbody>
                 {pageRows.map((r, i) => (
                   <tr key={i} className="border-b border-border/50 hover:bg-accent/30">
-                    {resultCols.map((c) => (
-                      <td key={c} className="px-3 py-1.5 font-mono whitespace-nowrap">
+                    {visibleCols.map((c) => (
+                      <td
+                        key={c}
+                        style={{ width: colWidths[c] ?? 160 }}
+                        className="px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis"
+                      >
                         {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
                       </td>
                     ))}
@@ -785,6 +858,7 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
             </table>
           )}
         </div>
+
 
         {resultRows.length > 0 && (
           <div className="flex items-center justify-between border-t border-border bg-card/30 px-4 py-2 text-xs">
