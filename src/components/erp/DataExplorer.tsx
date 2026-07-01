@@ -242,6 +242,9 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
         ? res.columns
         : (res.rows[0] ? Object.keys(res.rows[0]) : []);
       setResultCols(cols);
+      setColOrder(cols);
+      setHiddenCols(new Set());
+      setColWidths({});
       setResultRows(res.rows);
       setPage(1);
       toast.success(`${res.rows.length} row(s) in ${res.durationMs}ms`);
