@@ -552,32 +552,125 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
           </div>
 
           {/* Join builder */}
-          {selected.length >= 2 && (
+          {selected.length >= 1 && (
             <div className="mt-3 rounded-md border border-border bg-background/60 p-3">
               <div className="mb-2 flex items-center gap-2">
                 <Link2 className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="text-xs font-medium">Join Builder</span>
                 <Badge variant="outline" className="text-[10px]">Auto Detect Joins</Badge>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="ml-auto h-7 text-xs"
+                  disabled={selected.length < 2}
+                  onClick={() => {
+                    const l = selected[0], r = selected[1];
+                    if (!l || !r) return;
+                    setJoins((js) => [
+                      ...js,
+                      {
+                        leftAlias: l.alias, leftColumn: "",
+                        rightAlias: r.alias, rightColumn: "",
+                        joinType: "INNER", source: "manual",
+                      },
+                    ]);
+                  }}
+                >
+                  <Plus className="mr-1 h-3 w-3" /> Add Manual Join
+                </Button>
               </div>
               {joins.length === 0 && (
                 <div className="text-[11px] text-muted-foreground italic">
-                  No foreign-key relationships detected between selected tables.
+                  No joins yet. Auto-detected joins appear here when tables share foreign keys.
                 </div>
               )}
-              {joins.map((j, i) => (
-                <div key={i} className="flex items-center gap-2 py-1 text-xs">
-                  <Badge variant="secondary" className="font-mono">{j.leftAlias}.{j.leftColumn}</Badge>
-                  <span className="text-muted-foreground">=</span>
-                  <Badge variant="secondary" className="font-mono">{j.rightAlias}.{j.rightColumn}</Badge>
-                  <button
-                    onClick={() => setJoins((js) => js.filter((_, idx) => idx !== i))}
-                    className="ml-auto text-muted-foreground hover:text-destructive"
-                  ><X className="h-3 w-3" /></button>
-                </div>
-              ))}
+              <div className="space-y-1.5">
+                {joins.map((j, i) => {
+                  const isManual = j.source === "manual";
+                  const leftCols = aliasColumns.filter((c) => c.alias === j.leftAlias);
+                  const rightCols = aliasColumns.filter((c) => c.alias === j.rightAlias);
+                  const patch = (p: Partial<DataExplorerJoin>) =>
+                    setJoins((js) => js.map((x, idx) => (idx === i ? { ...x, ...p } : x)));
+                  return (
+                    <div key={i} className="flex flex-wrap items-center gap-1.5 rounded border border-border/60 bg-background/40 px-2 py-1.5 text-xs">
+                      <Badge variant={isManual ? "default" : "secondary"} className="text-[10px]">
+                        {isManual ? "MANUAL" : "AUTO"}
+                      </Badge>
+                      {isManual ? (
+                        <>
+                          <Select value={j.leftAlias} onValueChange={(v) => patch({ leftAlias: v, leftColumn: "" })}>
+                            <SelectTrigger className="h-7 w-[90px] text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {selected.map((s) => (
+                                <SelectItem key={s.alias} value={s.alias}>{s.alias}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Select value={j.leftColumn} onValueChange={(v) => patch({ leftColumn: v })}>
+                            <SelectTrigger className="h-7 w-[140px] text-xs"><SelectValue placeholder="col" /></SelectTrigger>
+                            <SelectContent>
+                              {leftCols.map((c) => (
+                                <SelectItem key={c.column} value={c.column}>{c.column}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Select value={j.joinType || "INNER"} onValueChange={(v) => patch({ joinType: v as DataExplorerJoin["joinType"] })}>
+                            <SelectTrigger className="h-7 w-[110px] text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="INNER">INNER JOIN</SelectItem>
+                              <SelectItem value="LEFT">LEFT JOIN</SelectItem>
+                              <SelectItem value="RIGHT">RIGHT JOIN</SelectItem>
+                              <SelectItem value="FULL">FULL OUTER</SelectItem>
+                              <SelectItem value="CROSS">CROSS JOIN</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Select value={j.rightAlias} onValueChange={(v) => patch({ rightAlias: v, rightColumn: "" })}>
+                            <SelectTrigger className="h-7 w-[90px] text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {selected.map((s) => (
+                                <SelectItem key={s.alias} value={s.alias}>{s.alias}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          {j.joinType !== "CROSS" && (
+                            <Select value={j.rightColumn} onValueChange={(v) => patch({ rightColumn: v })}>
+                              <SelectTrigger className="h-7 w-[140px] text-xs"><SelectValue placeholder="col" /></SelectTrigger>
+                              <SelectContent>
+                                {rightCols.map((c) => (
+                                  <SelectItem key={c.column} value={c.column}>{c.column}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <Badge variant="secondary" className="font-mono">{j.leftAlias}.{j.leftColumn}</Badge>
+                          <Select value={j.joinType || "LEFT"} onValueChange={(v) => patch({ joinType: v as DataExplorerJoin["joinType"] })}>
+                            <SelectTrigger className="h-7 w-[110px] text-xs"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="INNER">INNER JOIN</SelectItem>
+                              <SelectItem value="LEFT">LEFT JOIN</SelectItem>
+                              <SelectItem value="RIGHT">RIGHT JOIN</SelectItem>
+                              <SelectItem value="FULL">FULL OUTER</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Badge variant="secondary" className="font-mono">{j.rightAlias}.{j.rightColumn}</Badge>
+                        </>
+                      )}
+                      <button
+                        onClick={() => setJoins((js) => js.filter((_, idx) => idx !== i))}
+                        className="ml-auto text-muted-foreground hover:text-destructive"
+                        title="Delete join"
+                      ><X className="h-3.5 w-3.5" /></button>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </div>
+
 
         {/* Results */}
         <div className="flex items-center justify-between border-b border-border bg-background px-4 py-2 text-xs">
