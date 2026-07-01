@@ -21,6 +21,8 @@ import type {
 
 const USED_COLOR = "#eab308"; // yellow
 const FREE_COLOR = "#3b82f6"; // blue
+const LOG_USED_COLOR = "#f97316"; // orange
+const LOG_FREE_COLOR = "#10b981"; // green
 
 
 type MaintLogEntry = MaintenanceProgress & { ts: number };
