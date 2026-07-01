@@ -33,5 +33,6 @@ dist-ssr
 # Electron build output
 electron-release/
 electron-release.zip
+electron-release*.zip
  
  

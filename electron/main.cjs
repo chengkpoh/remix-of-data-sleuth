@@ -279,6 +279,7 @@ function registerIpc(mainWindow) {
     const usedMB  = Number(row.UsedMB)  || 0;
     const freeMB  = Math.max(0, totalMB - usedMB);
     return { totalMB, usedMB, freeMB };
+   }); 
 
 
   // ---------------- Maintenance: shrink ----------------
