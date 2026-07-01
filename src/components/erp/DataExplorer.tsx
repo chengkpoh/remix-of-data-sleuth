@@ -164,9 +164,12 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
   const colInfo = (alias: string, column: string) =>
     aliasColumns.find((c) => c.alias === alias && c.column === column);
 
-  // Auto-detect joins when 2+ tables are selected
+  // Auto-detect joins when 2+ tables are selected (preserve manual)
   useEffect(() => {
-    if (selected.length < 2 || !foreignKeys.length) return;
+    if (selected.length < 2 || !foreignKeys.length) {
+      setJoins((prev) => prev.filter((j) => j.source === "manual"));
+      return;
+    }
     const detected: DataExplorerJoin[] = [];
     for (const a of selected) {
       for (const b of selected) {
@@ -185,11 +188,13 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
           if (!exists) detected.push({
             leftAlias: a.alias, leftColumn: fk.parentColumn,
             rightAlias: b.alias, rightColumn: fk.refColumn,
+            joinType: "LEFT",
+            source: "auto",
           });
         }
       }
     }
-    setJoins(detected);
+    setJoins((prev) => [...detected, ...prev.filter((j) => j.source === "manual")]);
   }, [selected, foreignKeys]);
 
   const addCondition = () => {
