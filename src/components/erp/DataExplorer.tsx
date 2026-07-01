@@ -106,10 +106,15 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
   const [running, setRunning] = useState(false);
   const [resultCols, setResultCols] = useState<string[]>([]);
   const [resultRows, setResultRows] = useState<Record<string, unknown>[]>([]);
+  const [colOrder, setColOrder] = useState<string[]>([]);
+  const [hiddenCols, setHiddenCols] = useState<Set<string>>(new Set());
+  const [colWidths, setColWidths] = useState<Record<string, number>>({});
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
+  const dragColRef = useRef<string | null>(null);
+  const resizeRef = useRef<{ col: string; startX: number; startW: number } | null>(null);
 
   const [loadOpen, setLoadOpen] = useState(false);
   const [savedList, setSavedList] = useState<SavedQuery[]>([]);
