@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld("erp", {
   },
   getServerInfo: () => ipcRenderer.invoke("erp:getServerInfo"),
   getDatabaseSize: () => ipcRenderer.invoke("erp:getDatabaseSize"),
+  getLogSize: () => ipcRenderer.invoke("erp:getLogSize"),
   shrinkDatabase: () => ipcRenderer.invoke("erp:shrinkDatabase"),
   getFragmentation: (params) => ipcRenderer.invoke("erp:getFragmentation", params || {}),
   runIndexMaintenance: (params) => ipcRenderer.invoke("erp:runIndexMaintenance", params || {}),
