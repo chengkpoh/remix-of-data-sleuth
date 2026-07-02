@@ -70,19 +70,25 @@ const OPS: Record<ColCat, { value: string; label: string }[]> = {
   ],
 };
 
-interface SelectedTable extends TableInfo { alias: string }
+interface SelectedTable extends TableInfo { alias: string; instanceId: string }
 interface UICondition extends DataExplorerCondition { id: string }
 
 const newId = () => Math.random().toString(36).slice(2, 9);
 
 function aliasFor(name: string, used: Set<string>): string {
-  const caps = name.replace(/[^A-Z]/g, "");
-  let base = (caps || name.slice(0, 2)).toUpperCase();
+  let base = name.replace(/[^A-Za-z0-9_]/g, "");
   if (!base) base = "T";
-  let alias = base;
-  let i = 2;
-  while (used.has(alias)) alias = base + i++;
+  if (!/^[A-Za-z_]/.test(base)) base = `T${base}`;
+  let i = 1;
+  let alias = `${base}${i}`;
+  while (used.has(alias)) alias = `${base}${++i}`;
   return alias;
+}
+
+function cleanAlias(value: string): string {
+  const cleaned = value.replace(/[^A-Za-z0-9_]/g, "");
+  if (!cleaned) return "";
+  return /^[A-Za-z_]/.test(cleaned) ? cleaned : `T${cleaned}`;
 }
 
 const SAVED_KEY = "erp.dataExplorer.savedQueries.v1";
@@ -140,15 +146,26 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
     selected.filter((s) => s.schema === t.schema && s.name === t.name).length;
 
   const addTableInstance = (t: TableInfo) => {
-    const used = new Set(selected.map((s) => s.alias));
-    setSelected((s) => [...s, { ...t, alias: aliasFor(t.name, used) }]);
+    setSelected((current) => {
+      const used = new Set(current.map((s) => s.alias));
+      return [...current, { ...t, alias: aliasFor(t.name, used), instanceId: newId() }];
+    });
   };
 
-  const removeInstance = (alias: string) =>
+  const removeInstance = (alias: string) => {
     setSelected((s) => s.filter((x) => x.alias !== alias));
+    setJoins((js) => js.filter((j) => j.leftAlias !== alias && j.rightAlias !== alias));
+    setConditions((cs) => cs.filter((c) => c.alias !== alias));
+  };
+
+  const clearSelectedTables = () => {
+    setSelected([]);
+    setJoins([]);
+    setConditions([]);
+  };
 
   const renameAlias = (oldAlias: string, rawNext: string) => {
-    const cleaned = rawNext.replace(/[^A-Za-z0-9_]/g, "");
+    const cleaned = cleanAlias(rawNext);
     if (!cleaned || cleaned === oldAlias) return;
     if (selected.some((s) => s.alias === cleaned)) {
       toast.error(`Alias "${cleaned}" is already used.`);
@@ -272,7 +289,7 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
   };
 
   const clearAll = () => {
-    setSelected([]); setConditions([]); setJoins([]);
+    clearSelectedTables();
     setResultCols([]); setResultRows([]); setQueryName("");
   };
 
@@ -294,8 +311,15 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
     setLoadOpen(true);
   };
   const applySaved = (q: SavedQuery) => {
+    const used = new Set<string>();
+    const savedTables: SelectedTable[] = q.spec.tables.map((t) => {
+      const requested = cleanAlias(t.alias || t.name);
+      const alias = requested && !used.has(requested) ? requested : aliasFor(t.name, used);
+      used.add(alias);
+      return { schema: t.schema, name: t.name, alias, instanceId: newId() };
+    });
     setQueryName(q.name);
-    setSelected(q.spec.tables.map((t) => ({ schema: t.schema, name: t.name, alias: t.alias })));
+    setSelected(savedTables);
     setJoins(q.spec.joins);
     setConditions(q.spec.conditions.map((c) => ({ ...c, id: newId() })));
     setLimit(q.spec.limit);
