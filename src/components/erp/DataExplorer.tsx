@@ -136,16 +136,32 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
     });
   }, [schema.tables, tableSearch, showSystem]);
 
-  const isSelected = (t: TableInfo) =>
-    selected.some((s) => s.schema === t.schema && s.name === t.name);
+  const instanceCount = (t: TableInfo) =>
+    selected.filter((s) => s.schema === t.schema && s.name === t.name).length;
 
-  const toggleTable = (t: TableInfo) => {
-    if (isSelected(t)) {
-      setSelected((s) => s.filter((x) => !(x.schema === t.schema && x.name === t.name)));
-    } else {
-      const used = new Set(selected.map((s) => s.alias));
-      setSelected((s) => [...s, { ...t, alias: aliasFor(t.name, used) }]);
+  const addTableInstance = (t: TableInfo) => {
+    const used = new Set(selected.map((s) => s.alias));
+    setSelected((s) => [...s, { ...t, alias: aliasFor(t.name, used) }]);
+  };
+
+  const removeInstance = (alias: string) =>
+    setSelected((s) => s.filter((x) => x.alias !== alias));
+
+  const renameAlias = (oldAlias: string, rawNext: string) => {
+    const cleaned = rawNext.replace(/[^A-Za-z0-9_]/g, "");
+    if (!cleaned || cleaned === oldAlias) return;
+    if (selected.some((s) => s.alias === cleaned)) {
+      toast.error(`Alias "${cleaned}" is already used.`);
+      return;
     }
+    setSelected((s) => s.map((x) => (x.alias === oldAlias ? { ...x, alias: cleaned } : x)));
+    // Update dependent references (joins & conditions) so nothing breaks.
+    setJoins((js) => js.map((j) => ({
+      ...j,
+      leftAlias: j.leftAlias === oldAlias ? cleaned : j.leftAlias,
+      rightAlias: j.rightAlias === oldAlias ? cleaned : j.rightAlias,
+    })));
+    setConditions((cs) => cs.map((c) => (c.alias === oldAlias ? { ...c, alias: cleaned } : c)));
   };
 
   // Columns for selected tables (with alias prefix)
@@ -418,16 +434,25 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
           <ScrollArea className="h-[calc(100vh-380px)] px-1">
             <div className="p-1">
               {filteredTables.map((t) => {
-                const checked = isSelected(t);
+                const count = instanceCount(t);
                 return (
-                  <label
+                  <div
                     key={`${t.schema}.${t.name}`}
-                    className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent"
+                    className="group flex items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent"
                   >
-                    <Checkbox checked={checked} onCheckedChange={() => toggleTable(t)} />
                     <TableIcon className="h-3 w-3 text-muted-foreground" />
-                    <span className="truncate font-mono">{t.name}</span>
-                  </label>
+                    <span className="flex-1 truncate font-mono">{t.name}</span>
+                    {count > 0 && (
+                      <Badge variant="secondary" className="h-4 px-1 text-[10px]">×{count}</Badge>
+                    )}
+                    <button
+                      onClick={() => addTableInstance(t)}
+                      className="rounded p-0.5 text-emerald-500 opacity-0 hover:bg-emerald-500/10 group-hover:opacity-100"
+                      title="Add instance"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -442,13 +467,18 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
               </button>
             )}
           </div>
-          <div className="space-y-1 max-h-32 overflow-auto">
+          <div className="space-y-1 max-h-40 overflow-auto">
             {selected.map((t) => (
-              <div key={t.alias} className="flex items-center justify-between rounded border border-border bg-background/60 px-2 py-1 text-xs">
-                <span className="truncate font-mono">
-                  {t.name} <span className="text-muted-foreground">as {t.alias}</span>
-                </span>
-                <button onClick={() => toggleTable(t)} className="text-muted-foreground hover:text-destructive">
+              <div key={t.alias} className="flex items-center gap-1.5 rounded border border-border bg-background/60 px-2 py-1 text-xs">
+                <span className="truncate font-mono flex-1" title={`${t.schema}.${t.name}`}>{t.name}</span>
+                <span className="text-muted-foreground">as</span>
+                <Input
+                  defaultValue={t.alias}
+                  onBlur={(e) => renameAlias(t.alias, e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                  className="h-6 w-16 px-1 py-0 text-xs font-mono"
+                />
+                <button onClick={() => removeInstance(t.alias)} className="text-muted-foreground hover:text-destructive">
                   <X className="h-3 w-3" />
                 </button>
               </div>
@@ -459,6 +489,7 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
           </div>
         </div>
       </aside>
+
 
       {/* ---------- Main ---------- */}
       <main className="flex flex-col min-w-0">
