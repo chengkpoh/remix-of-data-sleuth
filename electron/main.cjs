@@ -656,6 +656,8 @@ function registerIpc(mainWindow) {
   });
 
   ipcMain.handle("erp:runDataExplorerQuery", async (_e, spec) => {
+    console.log("🔥 runDataExplorerQuery received");
+console.log(JSON.stringify(spec, null, 2));
     if (!pool) throw new Error("Not connected");
     if (!schemaCache) await loadSchema();
 
@@ -795,11 +797,24 @@ function registerIpc(mainWindow) {
     });
 
     const limit = Math.max(1, Math.min(10000, Number(spec.limit) || 100));
+    const selectParts = [];
 
+for (const t of orderedTables) {
+  const cols = schemaCache.columns.filter(
+    (c) => c.schema === t.schema && c.table === t.name
+  );
+
+  for (const c of cols) {
+    selectParts.push(
+      `${quoteIdent(t.alias)}.${quoteIdent(c.column)} AS ${quoteIdent(`${t.alias}.${c.column}`)}`
+    );
+  }
+}
     const sqlText =
-      `SELECT TOP (${limit}) * FROM ${fromParts.join(" ")}` +
+      `SELECT TOP (${limit}) ${selectParts.join(", ")} FROM ${fromParts.join(" ")}` +
       (whereParts.length ? ` WHERE ${whereParts.join("")}` : "");
-
+    console.log("🔥 GENERATED SQL:");
+console.log(sqlText);
     const startedAt = Date.now();
     const res = await req.query(sqlText);
     return {

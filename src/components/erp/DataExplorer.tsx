@@ -114,9 +114,12 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
   const [resultRows, setResultRows] = useState<Record<string, unknown>[]>([]);
   const [colOrder, setColOrder] = useState<string[]>([]);
   const [hiddenCols, setHiddenCols] = useState<Set<string>>(new Set());
+  const [columnSearch, setColumnSearch] = useState("");
   const [colWidths, setColWidths] = useState<Record<string, number>>({});
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [columnFilters, setColumnFilters] = useState<Record<string, Set<string>>>({});
+const [filterOpen, setFilterOpen] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
   const dragColRef = useRef<string | null>(null);
@@ -369,11 +372,31 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
     return arr;
   }, [resultRows, sortKey, sortDir]);
 
-  const pageRows = useMemo(() => {
-    const start = (page - 1) * pageSize;
-    return sortedRows.slice(start, start + pageSize);
-  }, [sortedRows, page, pageSize]);
-  const totalPages = Math.max(1, Math.ceil(sortedRows.length / pageSize));
+const filteredRows = useMemo(() => {
+  let rows = sortedRows;
+
+  Object.entries(columnFilters).forEach(([col, values]) => {
+    if (values.size > 0) {
+      rows = rows.filter((r) =>
+        values.has(String(r[col] ?? ""))
+      );
+    }
+  });
+
+  return rows;
+}, [sortedRows, columnFilters]);
+
+
+const pageRows = useMemo(() => {
+  const start = (page - 1) * pageSize;
+  return filteredRows.slice(start, start + pageSize);
+}, [filteredRows, page, pageSize]);
+
+
+const totalPages = Math.max(
+  1,
+  Math.ceil(filteredRows.length / pageSize)
+);
 
   const exportCSV = () => {
     if (!resultRows.length) { toast.error("Nothing to export."); return; }
@@ -405,10 +428,33 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
   };
 
   // ---- Column customization helpers ----
+  const getColumnValues = (col:string) => {
+  return Array.from(
+    new Set(
+      resultRows.map(r => String(r[col] ?? ""))
+    )
+  ).sort();
+};
+  const hideAllCols = () => {
+  setHiddenCols(new Set(resultCols));
+};
+
+const showAllCols = () => {
+  setHiddenCols(new Set());
+};
   const visibleCols = useMemo(
     () => colOrder.filter((c) => !hiddenCols.has(c)),
     [colOrder, hiddenCols],
   );
+  const filteredResultCols = useMemo(() => {
+  const q = columnSearch.trim().toLowerCase();
+
+  if (!q) return resultCols;
+
+  return resultCols.filter((c) =>
+    c.toLowerCase().includes(q)
+  );
+}, [resultCols, columnSearch]);
   const hideCol = (c: string) => setHiddenCols((s) => new Set(s).add(c));
   const showCol = (c: string) => setHiddenCols((s) => {
     const n = new Set(s); n.delete(c); return n;
@@ -451,7 +497,7 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
 
   // ===== render =====
   return (
-    <div className="grid grid-cols-[320px_1fr] min-h-[calc(100vh-49px)]">
+    <div className="grid grid-cols-[360px_1fr] min-h-[calc(100vh-49px)]">
       {/* ---------- Sidebar ---------- */}
       <aside className="flex flex-col border-r border-border bg-card/30">
         <div className="border-b border-border p-3">
@@ -483,11 +529,11 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
                 return (
                   <div
                     key={`${t.schema}.${t.name}`}
-                    className="group flex items-center gap-2 rounded border border-transparent px-2 py-1.5 text-xs hover:border-border hover:bg-accent"
+                    className="group flex w-full items-center gap-1 rounded border border-transparent px-2 py-1.5 text-xs hover:border-border hover:bg-accent"
                   >
                     <TableIcon className="h-3 w-3 text-muted-foreground" />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate font-mono">{t.name}</div>
+                    <div className="min-w-0 flex-1 overflow-hidden">
+                      <div className="truncate font-mono"title={t.name}>{t.name}</div>
                       <div className="truncate text-[10px] text-muted-foreground">{t.schema}</div>
                     </div>
                     {count > 0 && (
@@ -498,10 +544,9 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
                       variant="outline"
                       size="sm"
                       onClick={() => addTableInstance(t)}
-                      className="h-6 px-1.5 text-[11px]"
-                      title="Add instance"
+                      className="h-6 w-6 shrink-0 p-0"
                     >
-                      <Plus className="mr-1 h-3 w-3" /> Add
+                      <Plus className="h-3 w-3" /> 
                     </Button>
                   </div>
                 );
@@ -835,16 +880,57 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="start" className="w-72 p-2">
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="text-xs font-semibold">Column Chooser</span>
-                  <button
-                    className="text-[11px] text-primary hover:underline"
-                    onClick={() => { setHiddenCols(new Set()); setColOrder(resultCols); }}
-                  >Reset</button>
-                </div>
-                <ScrollArea className="max-h-64">
+<div className="mb-2">
+
+  <div className="mb-2 flex items-center justify-between">
+    <span className="text-xs font-semibold">
+      Column Chooser
+    </span>
+
+    <button
+      className="text-[11px] text-primary hover:underline"
+      onClick={() => {
+        setHiddenCols(new Set());
+        setColOrder(resultCols);
+        setColumnSearch("");
+      }}
+    >
+      Reset
+    </button>
+  </div>
+
+
+  <Input
+    value={columnSearch}
+    onChange={(e) => setColumnSearch(e.target.value)}
+    placeholder="Search columns..."
+    className="h-7 text-xs mb-2"
+  />
+
+
+  <div className="flex gap-1">
+    <Button
+      size="sm"
+      variant="outline"
+      className="h-6 text-[11px]"
+      onClick={hideAllCols}
+    >
+      Hide All
+    </Button>
+
+    <Button
+      size="sm"
+      variant="outline"
+      className="h-6 text-[11px]"
+      onClick={showAllCols}
+    >
+      Show All
+    </Button>
+  </div>
+</div>
+                <ScrollArea className="h-64">
                   <div className="space-y-1">
-                    {resultCols.map((c) => {
+                    {filteredResultCols.map((c) => {
                       const hidden = hiddenCols.has(c);
                       return (
                         <div
@@ -906,22 +992,118 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
                       <div className="flex items-center gap-1">
                         <GripVertical className="h-3 w-3 opacity-40 group-hover:opacity-100 cursor-grab" />
                         <button
-                          className="flex-1 text-left"
-                          onClick={() => {
-                            if (sortKey === c) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-                            else { setSortKey(c); setSortDir("asc"); }
-                          }}
-                        >
-                          {c}{sortKey === c ? (sortDir === "asc" ? " ▲" : " ▼") : ""}
-                        </button>
-                        <button
-                          onClick={() => hideCol(c)}
-                          className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"
-                          title="Hide column"
-                        >
-                          <EyeOff className="h-3 w-3" />
-                        </button>
-                      </div>
+className="flex-1 text-left"
+onClick={() => {
+ if (sortKey === c)
+   setSortDir(d=>d==="asc"?"desc":"asc");
+ else {
+   setSortKey(c);
+   setSortDir("asc");
+ }
+}}
+>
+{c}
+</button>
+                        <Popover
+open={filterOpen===c}
+onOpenChange={(v)=>setFilterOpen(v?c:null)}
+>
+
+<PopoverTrigger asChild>
+
+<button
+className="text-muted-foreground hover:text-primary"
+>
+▼
+</button>
+
+</PopoverTrigger>
+
+
+<PopoverContent
+className="w-48 p-2"
+>
+
+<div className="max-h-60 overflow-auto">
+
+{
+getColumnValues(c).map(v=>{
+
+const checked =
+columnFilters[c]?.has(v) ?? true;
+
+
+return (
+
+<label
+key={v}
+className="flex gap-2 text-xs"
+>
+
+<Checkbox
+
+checked={checked}
+
+onCheckedChange={(x)=>{
+
+setColumnFilters(prev=>{
+
+const next =
+new Set(
+ prev[c] ??
+ getColumnValues(c)
+);
+
+
+if(x)
+ next.add(v);
+else
+ next.delete(v);
+
+
+return {
+ ...prev,
+ [c]:next
+};
+
+});
+
+}}
+
+ />
+
+<span>{v}</span>
+
+
+</label>
+
+)
+
+})
+}
+
+</div>
+
+
+<Button
+
+size="sm"
+
+className="mt-2 w-full"
+
+onClick={()=>setFilterOpen(null)}
+
+>
+Apply
+</Button>
+
+
+</PopoverContent>
+
+</Popover>
+
+
+</div>
                       <span
                         onMouseDown={startResize(c)}
                         className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/40"
