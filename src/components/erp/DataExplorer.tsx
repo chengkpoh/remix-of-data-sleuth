@@ -209,23 +209,33 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
       return;
     }
     const detected: DataExplorerJoin[] = [];
-    for (const a of selected) {
-      for (const b of selected) {
-        if (a.alias === b.alias) continue;
-        const fk = foreignKeys.find(
-          (f) =>
-            f.parentSchema === a.schema && f.parentTable === a.name &&
-            f.refSchema === b.schema && f.refTable === b.name,
+    for (let i = 0; i < selected.length - 1; i++) {
+      for (let k = i + 1; k < selected.length; k++) {
+        const a = selected[i];
+        const b = selected[k];
+        const aToB = foreignKeys.find(
+          (f) => f.parentSchema === a.schema && f.parentTable === a.name && f.refSchema === b.schema && f.refTable === b.name,
         );
-        if (fk) {
-          const exists = detected.some(
-            (d) =>
-              (d.leftAlias === a.alias && d.rightAlias === b.alias) ||
-              (d.leftAlias === b.alias && d.rightAlias === a.alias),
-          );
-          if (!exists) detected.push({
-            leftAlias: a.alias, leftColumn: fk.parentColumn,
-            rightAlias: b.alias, rightColumn: fk.refColumn,
+        if (aToB) {
+          detected.push({
+            leftAlias: a.alias,
+            leftColumn: aToB.parentColumn,
+            rightAlias: b.alias,
+            rightColumn: aToB.refColumn,
+            joinType: "LEFT",
+            source: "auto",
+          });
+          continue;
+        }
+        const bToA = foreignKeys.find(
+          (f) => f.parentSchema === b.schema && f.parentTable === b.name && f.refSchema === a.schema && f.refTable === a.name,
+        );
+        if (bToA) {
+          detected.push({
+            leftAlias: a.alias,
+            leftColumn: bToA.refColumn,
+            rightAlias: b.alias,
+            rightColumn: bToA.parentColumn,
             joinType: "LEFT",
             source: "auto",
           });
