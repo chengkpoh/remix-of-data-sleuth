@@ -322,16 +322,26 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
   };
   const applySaved = (q: SavedQuery) => {
     const used = new Set<string>();
+    const aliasMap = new Map<string, string>();
     const savedTables: SelectedTable[] = q.spec.tables.map((t) => {
       const requested = cleanAlias(t.alias || t.name);
       const alias = requested && !used.has(requested) ? requested : aliasFor(t.name, used);
       used.add(alias);
+      aliasMap.set(t.alias, alias);
       return { schema: t.schema, name: t.name, alias, instanceId: newId() };
     });
     setQueryName(q.name);
     setSelected(savedTables);
-    setJoins(q.spec.joins);
-    setConditions(q.spec.conditions.map((c) => ({ ...c, id: newId() })));
+    setJoins(q.spec.joins.map((j) => ({
+      ...j,
+      leftAlias: aliasMap.get(j.leftAlias) || j.leftAlias,
+      rightAlias: aliasMap.get(j.rightAlias) || j.rightAlias,
+    })));
+    setConditions(q.spec.conditions.map((c) => ({
+      ...c,
+      alias: aliasMap.get(c.alias) || c.alias,
+      id: newId(),
+    })));
     setLimit(q.spec.limit);
     setLoadOpen(false);
     toast.success(`Loaded "${q.name}"`);
