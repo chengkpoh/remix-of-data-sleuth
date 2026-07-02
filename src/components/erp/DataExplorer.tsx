@@ -164,12 +164,12 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
     setConditions([]);
   };
 
-  const renameAlias = (oldAlias: string, rawNext: string) => {
+  const renameAlias = (oldAlias: string, rawNext: string): boolean => {
     const cleaned = cleanAlias(rawNext);
-    if (!cleaned || cleaned === oldAlias) return;
+    if (!cleaned || cleaned === oldAlias) return cleaned === oldAlias;
     if (selected.some((s) => s.alias === cleaned)) {
       toast.error(`Alias "${cleaned}" is already used.`);
-      return;
+      return false;
     }
     setSelected((s) => s.map((x) => (x.alias === oldAlias ? { ...x, alias: cleaned } : x)));
     // Update dependent references (joins & conditions) so nothing breaks.
@@ -179,6 +179,7 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
       rightAlias: j.rightAlias === oldAlias ? cleaned : j.rightAlias,
     })));
     setConditions((cs) => cs.map((c) => (c.alias === oldAlias ? { ...c, alias: cleaned } : c)));
+    return true;
   };
 
   // Columns for selected tables (with alias prefix)
