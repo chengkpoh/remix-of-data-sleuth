@@ -136,16 +136,32 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
     });
   }, [schema.tables, tableSearch, showSystem]);
 
-  const isSelected = (t: TableInfo) =>
-    selected.some((s) => s.schema === t.schema && s.name === t.name);
+  const instanceCount = (t: TableInfo) =>
+    selected.filter((s) => s.schema === t.schema && s.name === t.name).length;
 
-  const toggleTable = (t: TableInfo) => {
-    if (isSelected(t)) {
-      setSelected((s) => s.filter((x) => !(x.schema === t.schema && x.name === t.name)));
-    } else {
-      const used = new Set(selected.map((s) => s.alias));
-      setSelected((s) => [...s, { ...t, alias: aliasFor(t.name, used) }]);
+  const addTableInstance = (t: TableInfo) => {
+    const used = new Set(selected.map((s) => s.alias));
+    setSelected((s) => [...s, { ...t, alias: aliasFor(t.name, used) }]);
+  };
+
+  const removeInstance = (alias: string) =>
+    setSelected((s) => s.filter((x) => x.alias !== alias));
+
+  const renameAlias = (oldAlias: string, rawNext: string) => {
+    const cleaned = rawNext.replace(/[^A-Za-z0-9_]/g, "");
+    if (!cleaned || cleaned === oldAlias) return;
+    if (selected.some((s) => s.alias === cleaned)) {
+      toast.error(`Alias "${cleaned}" is already used.`);
+      return;
     }
+    setSelected((s) => s.map((x) => (x.alias === oldAlias ? { ...x, alias: cleaned } : x)));
+    // Update dependent references (joins & conditions) so nothing breaks.
+    setJoins((js) => js.map((j) => ({
+      ...j,
+      leftAlias: j.leftAlias === oldAlias ? cleaned : j.leftAlias,
+      rightAlias: j.rightAlias === oldAlias ? cleaned : j.rightAlias,
+    })));
+    setConditions((cs) => cs.map((c) => (c.alias === oldAlias ? { ...c, alias: cleaned } : c)));
   };
 
   // Columns for selected tables (with alias prefix)
