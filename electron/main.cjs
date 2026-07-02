@@ -709,6 +709,12 @@ function registerIpc(mainWindow) {
         t = leftTable;
         aliasToJoin = j.leftAlias;
       }
+      if (!joinedAliases.has(j.leftAlias) && !joinedAliases.has(j.rightAlias)) {
+        fromParts.push(`CROSS JOIN ${tableSource(leftTable)}`);
+        joinedAliases.add(j.leftAlias);
+        t = rightTable;
+        aliasToJoin = j.rightAlias;
+      }
       if (joinedAliases.has(aliasToJoin)) continue;
 
       if (jt === "CROSS") {
