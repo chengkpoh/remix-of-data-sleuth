@@ -662,15 +662,20 @@ function registerIpc(mainWindow) {
     const tables = Array.isArray(spec?.tables) ? spec.tables : [];
     if (!tables.length) throw new Error("Select at least one table.");
 
-    // Validate tables exist & build alias map
+    // Validate table instances exist & build an alias map. The same physical
+    // table may appear many times, but every visual instance must use a
+    // different SQL alias.
     const tableByAlias = new Map();
+    const orderedTables = [];
     for (const t of tables) {
       const exists = schemaCache.tables.some((x) => x.schema === t.schema && x.name === t.name);
       if (!exists) throw new Error(`Unknown table ${t.schema}.${t.name}`);
       const alias = String(t.alias || t.name).replace(/[^A-Za-z0-9_]/g, "");
       if (!alias) throw new Error(`Invalid alias for ${t.schema}.${t.name}`);
       if (tableByAlias.has(alias)) throw new Error(`Duplicate alias "${alias}"`);
-      tableByAlias.set(alias, { ...t, alias });
+      const instance = { ...t, alias };
+      tableByAlias.set(alias, instance);
+      orderedTables.push(instance);
     }
 
     const colExists = (alias, col) => {
