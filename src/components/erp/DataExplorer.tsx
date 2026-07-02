@@ -430,7 +430,7 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
 
   // ===== render =====
   return (
-    <div className="grid grid-cols-[280px_1fr] min-h-[calc(100vh-49px)]">
+    <div className="grid grid-cols-[320px_1fr] min-h-[calc(100vh-49px)]">
       {/* ---------- Sidebar ---------- */}
       <aside className="flex flex-col border-r border-border bg-card/30">
         <div className="border-b border-border p-3">
@@ -454,7 +454,7 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
           </label>
         </div>
         <div className="flex-1 overflow-hidden">
-          <Label className="block px-3 pt-2 text-xs font-medium text-muted-foreground">Tables</Label>
+          <Label className="block px-3 pt-2 text-xs font-medium text-muted-foreground">Add Tables</Label>
           <ScrollArea className="h-[calc(100vh-380px)] px-1">
             <div className="p-1">
               {filteredTables.map((t) => {
@@ -462,20 +462,26 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
                 return (
                   <div
                     key={`${t.schema}.${t.name}`}
-                    className="group flex items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent"
+                    className="group flex items-center gap-2 rounded border border-transparent px-2 py-1.5 text-xs hover:border-border hover:bg-accent"
                   >
                     <TableIcon className="h-3 w-3 text-muted-foreground" />
-                    <span className="flex-1 truncate font-mono">{t.name}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-mono">{t.name}</div>
+                      <div className="truncate text-[10px] text-muted-foreground">{t.schema}</div>
+                    </div>
                     {count > 0 && (
                       <Badge variant="secondary" className="h-4 px-1 text-[10px]">×{count}</Badge>
                     )}
-                    <button
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
                       onClick={() => addTableInstance(t)}
-                      className="rounded p-0.5 text-emerald-500 opacity-0 hover:bg-emerald-500/10 group-hover:opacity-100"
+                      className="h-6 px-1.5 text-[11px]"
                       title="Add instance"
                     >
-                      <Plus className="h-3.5 w-3.5" />
-                    </button>
+                      <Plus className="mr-1 h-3 w-3" /> Add
+                    </Button>
                   </div>
                 );
               })}
@@ -486,25 +492,30 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
           <div className="mb-2 flex items-center justify-between">
             <Label className="text-xs font-medium">Selected Tables ({selected.length})</Label>
             {selected.length > 0 && (
-              <button onClick={() => setSelected([])} className="text-[11px] text-primary hover:underline">
+              <button onClick={clearSelectedTables} className="text-[11px] text-primary hover:underline">
                 Clear All
               </button>
             )}
           </div>
-          <div className="space-y-1 max-h-40 overflow-auto">
+          <div className="space-y-1.5 max-h-48 overflow-auto">
             {selected.map((t) => (
-              <div key={t.alias} className="flex items-center gap-1.5 rounded border border-border bg-background/60 px-2 py-1 text-xs">
-                <span className="truncate font-mono flex-1" title={`${t.schema}.${t.name}`}>{t.name}</span>
-                <span className="text-muted-foreground">as</span>
+              <div key={t.instanceId} className="rounded border border-border bg-background/60 px-2 py-1.5 text-xs">
+                <div className="mb-1 flex items-center gap-1.5">
+                  <TableIcon className="h-3 w-3 text-muted-foreground" />
+                  <span className="truncate font-mono font-medium flex-1" title={`${t.schema}.${t.name}`}>{t.name}</span>
+                  <button onClick={() => removeInstance(t.alias)} className="text-muted-foreground hover:text-destructive" title="Remove instance">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] text-muted-foreground">Alias</span>
                 <Input
-                  defaultValue={t.alias}
+                  value={t.alias}
+                  onChange={(e) => renameAlias(t.alias, e.target.value)}
                   onBlur={(e) => renameAlias(t.alias, e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                  className="h-6 w-16 px-1 py-0 text-xs font-mono"
+                  className="h-6 flex-1 px-1.5 py-0 text-xs font-mono"
                 />
-                <button onClick={() => removeInstance(t.alias)} className="text-muted-foreground hover:text-destructive">
-                  <X className="h-3 w-3" />
-                </button>
+                </div>
               </div>
             ))}
             {!selected.length && (
