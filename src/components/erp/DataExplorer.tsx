@@ -530,12 +530,15 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className="text-[11px] text-muted-foreground">Alias</span>
-                <Input
-                  value={t.alias}
-                  onChange={(e) => renameAlias(t.alias, e.target.value)}
-                  onBlur={(e) => renameAlias(t.alias, e.target.value)}
-                  className="h-6 flex-1 px-1.5 py-0 text-xs font-mono"
-                />
+                  <Input
+                    key={t.alias}
+                    defaultValue={t.alias}
+                    onBlur={(e) => {
+                      if (!renameAlias(t.alias, e.target.value)) e.currentTarget.value = t.alias;
+                    }}
+                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                    className="h-6 flex-1 px-1.5 py-0 text-xs font-mono"
+                  />
                 </div>
               </div>
             ))}
