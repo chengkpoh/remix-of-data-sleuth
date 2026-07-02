@@ -662,15 +662,20 @@ function registerIpc(mainWindow) {
     const tables = Array.isArray(spec?.tables) ? spec.tables : [];
     if (!tables.length) throw new Error("Select at least one table.");
 
-    // Validate tables exist & build alias map
+    // Validate table instances exist & build an alias map. The same physical
+    // table may appear many times, but every visual instance must use a
+    // different SQL alias.
     const tableByAlias = new Map();
+    const orderedTables = [];
     for (const t of tables) {
       const exists = schemaCache.tables.some((x) => x.schema === t.schema && x.name === t.name);
       if (!exists) throw new Error(`Unknown table ${t.schema}.${t.name}`);
       const alias = String(t.alias || t.name).replace(/[^A-Za-z0-9_]/g, "");
       if (!alias) throw new Error(`Invalid alias for ${t.schema}.${t.name}`);
       if (tableByAlias.has(alias)) throw new Error(`Duplicate alias "${alias}"`);
-      tableByAlias.set(alias, { ...t, alias });
+      const instance = { ...t, alias };
+      tableByAlias.set(alias, instance);
+      orderedTables.push(instance);
     }
 
     const colExists = (alias, col) => {
@@ -683,23 +688,40 @@ function registerIpc(mainWindow) {
     };
 
     const quoteIdent = (s) => "[" + String(s).replace(/]/g, "]]") + "]";
+    const tableSource = (t) => `${quoteIdent(t.schema)}.${quoteIdent(t.name)} AS ${quoteIdent(t.alias)} WITH (NOLOCK)`;
 
     // FROM ... [JOINs]
-    const firstAlias = tables[0].alias || tables[0].name;
-    const fromParts = [`${quoteIdent(tables[0].schema)}.${quoteIdent(tables[0].name)} AS ${quoteIdent(firstAlias)} WITH (NOLOCK)`];
+    const firstAlias = orderedTables[0].alias;
+    const fromParts = [tableSource(orderedTables[0])];
 
     const joins = Array.isArray(spec.joins) ? spec.joins : [];
     const joinedAliases = new Set([firstAlias]);
-    // Naive ordered join — assume each join references a previously-joined alias.
     for (const j of joins) {
       const jt = String(j.joinType || "LEFT").toUpperCase();
-      const t = tableByAlias.get(j.rightAlias);
-      if (!t) throw new Error(`Unknown alias in join: ${j.rightAlias}`);
+      const leftTable = tableByAlias.get(j.leftAlias);
+      const rightTable = tableByAlias.get(j.rightAlias);
+      if (!leftTable) throw new Error(`Unknown alias in join: ${j.leftAlias}`);
+      if (!rightTable) throw new Error(`Unknown alias in join: ${j.rightAlias}`);
+
+      let t = rightTable;
+      let aliasToJoin = j.rightAlias;
+      if (joinedAliases.has(j.rightAlias) && !joinedAliases.has(j.leftAlias)) {
+        t = leftTable;
+        aliasToJoin = j.leftAlias;
+      }
+      if (!joinedAliases.has(j.leftAlias) && !joinedAliases.has(j.rightAlias)) {
+        fromParts.push(`CROSS JOIN ${tableSource(leftTable)}`);
+        joinedAliases.add(j.leftAlias);
+        t = rightTable;
+        aliasToJoin = j.rightAlias;
+      }
+      if (joinedAliases.has(aliasToJoin)) continue;
+
       if (jt === "CROSS") {
         fromParts.push(
-          `CROSS JOIN ${quoteIdent(t.schema)}.${quoteIdent(t.name)} AS ${quoteIdent(t.alias)} WITH (NOLOCK)`,
+          `CROSS JOIN ${tableSource(t)}`,
         );
-        joinedAliases.add(j.rightAlias);
+        joinedAliases.add(aliasToJoin);
         continue;
       }
       const leftType = colExists(j.leftAlias, j.leftColumn);
@@ -708,10 +730,17 @@ function registerIpc(mainWindow) {
       const allowedTypes = new Set(["INNER", "LEFT", "RIGHT", "FULL"]);
       const kw = allowedTypes.has(jt) ? (jt === "FULL" ? "FULL OUTER" : jt) : "LEFT";
       fromParts.push(
-        `${kw} JOIN ${quoteIdent(t.schema)}.${quoteIdent(t.name)} AS ${quoteIdent(t.alias)} WITH (NOLOCK) ` +
+        `${kw} JOIN ${tableSource(t)} ` +
           `ON ${quoteIdent(j.leftAlias)}.${quoteIdent(j.leftColumn)} = ${quoteIdent(j.rightAlias)}.${quoteIdent(j.rightColumn)}`,
       );
-      joinedAliases.add(j.rightAlias);
+      joinedAliases.add(aliasToJoin);
+    }
+
+    for (const t of orderedTables) {
+      if (!joinedAliases.has(t.alias)) {
+        fromParts.push(`CROSS JOIN ${tableSource(t)}`);
+        joinedAliases.add(t.alias);
+      }
     }
 
     // WHERE

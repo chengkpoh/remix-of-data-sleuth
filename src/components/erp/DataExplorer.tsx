@@ -70,19 +70,25 @@ const OPS: Record<ColCat, { value: string; label: string }[]> = {
   ],
 };
 
-interface SelectedTable extends TableInfo { alias: string }
+interface SelectedTable extends TableInfo { alias: string; instanceId: string }
 interface UICondition extends DataExplorerCondition { id: string }
 
 const newId = () => Math.random().toString(36).slice(2, 9);
 
 function aliasFor(name: string, used: Set<string>): string {
-  const caps = name.replace(/[^A-Z]/g, "");
-  let base = (caps || name.slice(0, 2)).toUpperCase();
+  let base = name.replace(/[^A-Za-z0-9_]/g, "");
   if (!base) base = "T";
-  let alias = base;
-  let i = 2;
-  while (used.has(alias)) alias = base + i++;
+  if (!/^[A-Za-z_]/.test(base)) base = `T${base}`;
+  let i = 1;
+  let alias = `${base}${i}`;
+  while (used.has(alias)) alias = `${base}${++i}`;
   return alias;
+}
+
+function cleanAlias(value: string): string {
+  const cleaned = value.replace(/[^A-Za-z0-9_]/g, "");
+  if (!cleaned) return "";
+  return /^[A-Za-z_]/.test(cleaned) ? cleaned : `T${cleaned}`;
 }
 
 const SAVED_KEY = "erp.dataExplorer.savedQueries.v1";
@@ -140,19 +146,30 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
     selected.filter((s) => s.schema === t.schema && s.name === t.name).length;
 
   const addTableInstance = (t: TableInfo) => {
-    const used = new Set(selected.map((s) => s.alias));
-    setSelected((s) => [...s, { ...t, alias: aliasFor(t.name, used) }]);
+    setSelected((current) => {
+      const used = new Set(current.map((s) => s.alias));
+      return [...current, { ...t, alias: aliasFor(t.name, used), instanceId: newId() }];
+    });
   };
 
-  const removeInstance = (alias: string) =>
+  const removeInstance = (alias: string) => {
     setSelected((s) => s.filter((x) => x.alias !== alias));
+    setJoins((js) => js.filter((j) => j.leftAlias !== alias && j.rightAlias !== alias));
+    setConditions((cs) => cs.filter((c) => c.alias !== alias));
+  };
 
-  const renameAlias = (oldAlias: string, rawNext: string) => {
-    const cleaned = rawNext.replace(/[^A-Za-z0-9_]/g, "");
-    if (!cleaned || cleaned === oldAlias) return;
+  const clearSelectedTables = () => {
+    setSelected([]);
+    setJoins([]);
+    setConditions([]);
+  };
+
+  const renameAlias = (oldAlias: string, rawNext: string): boolean => {
+    const cleaned = cleanAlias(rawNext);
+    if (!cleaned || cleaned === oldAlias) return cleaned === oldAlias;
     if (selected.some((s) => s.alias === cleaned)) {
       toast.error(`Alias "${cleaned}" is already used.`);
-      return;
+      return false;
     }
     setSelected((s) => s.map((x) => (x.alias === oldAlias ? { ...x, alias: cleaned } : x)));
     // Update dependent references (joins & conditions) so nothing breaks.
@@ -162,6 +179,7 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
       rightAlias: j.rightAlias === oldAlias ? cleaned : j.rightAlias,
     })));
     setConditions((cs) => cs.map((c) => (c.alias === oldAlias ? { ...c, alias: cleaned } : c)));
+    return true;
   };
 
   // Columns for selected tables (with alias prefix)
@@ -192,23 +210,33 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
       return;
     }
     const detected: DataExplorerJoin[] = [];
-    for (const a of selected) {
-      for (const b of selected) {
-        if (a.alias === b.alias) continue;
-        const fk = foreignKeys.find(
-          (f) =>
-            f.parentSchema === a.schema && f.parentTable === a.name &&
-            f.refSchema === b.schema && f.refTable === b.name,
+    for (let i = 0; i < selected.length - 1; i++) {
+      for (let k = i + 1; k < selected.length; k++) {
+        const a = selected[i];
+        const b = selected[k];
+        const aToB = foreignKeys.find(
+          (f) => f.parentSchema === a.schema && f.parentTable === a.name && f.refSchema === b.schema && f.refTable === b.name,
         );
-        if (fk) {
-          const exists = detected.some(
-            (d) =>
-              (d.leftAlias === a.alias && d.rightAlias === b.alias) ||
-              (d.leftAlias === b.alias && d.rightAlias === a.alias),
-          );
-          if (!exists) detected.push({
-            leftAlias: a.alias, leftColumn: fk.parentColumn,
-            rightAlias: b.alias, rightColumn: fk.refColumn,
+        if (aToB) {
+          detected.push({
+            leftAlias: a.alias,
+            leftColumn: aToB.parentColumn,
+            rightAlias: b.alias,
+            rightColumn: aToB.refColumn,
+            joinType: "LEFT",
+            source: "auto",
+          });
+          continue;
+        }
+        const bToA = foreignKeys.find(
+          (f) => f.parentSchema === b.schema && f.parentTable === b.name && f.refSchema === a.schema && f.refTable === a.name,
+        );
+        if (bToA) {
+          detected.push({
+            leftAlias: a.alias,
+            leftColumn: bToA.refColumn,
+            rightAlias: b.alias,
+            rightColumn: bToA.parentColumn,
             joinType: "LEFT",
             source: "auto",
           });
@@ -272,7 +300,7 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
   };
 
   const clearAll = () => {
-    setSelected([]); setConditions([]); setJoins([]);
+    clearSelectedTables();
     setResultCols([]); setResultRows([]); setQueryName("");
   };
 
@@ -294,10 +322,27 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
     setLoadOpen(true);
   };
   const applySaved = (q: SavedQuery) => {
+    const used = new Set<string>();
+    const aliasMap = new Map<string, string>();
+    const savedTables: SelectedTable[] = q.spec.tables.map((t) => {
+      const requested = cleanAlias(t.alias || t.name);
+      const alias = requested && !used.has(requested) ? requested : aliasFor(t.name, used);
+      used.add(alias);
+      aliasMap.set(t.alias, alias);
+      return { schema: t.schema, name: t.name, alias, instanceId: newId() };
+    });
     setQueryName(q.name);
-    setSelected(q.spec.tables.map((t) => ({ schema: t.schema, name: t.name, alias: t.alias })));
-    setJoins(q.spec.joins);
-    setConditions(q.spec.conditions.map((c) => ({ ...c, id: newId() })));
+    setSelected(savedTables);
+    setJoins(q.spec.joins.map((j) => ({
+      ...j,
+      leftAlias: aliasMap.get(j.leftAlias) || j.leftAlias,
+      rightAlias: aliasMap.get(j.rightAlias) || j.rightAlias,
+    })));
+    setConditions(q.spec.conditions.map((c) => ({
+      ...c,
+      alias: aliasMap.get(c.alias) || c.alias,
+      id: newId(),
+    })));
     setLimit(q.spec.limit);
     setLoadOpen(false);
     toast.success(`Loaded "${q.name}"`);
@@ -406,7 +451,7 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
 
   // ===== render =====
   return (
-    <div className="grid grid-cols-[280px_1fr] min-h-[calc(100vh-49px)]">
+    <div className="grid grid-cols-[320px_1fr] min-h-[calc(100vh-49px)]">
       {/* ---------- Sidebar ---------- */}
       <aside className="flex flex-col border-r border-border bg-card/30">
         <div className="border-b border-border p-3">
@@ -430,7 +475,7 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
           </label>
         </div>
         <div className="flex-1 overflow-hidden">
-          <Label className="block px-3 pt-2 text-xs font-medium text-muted-foreground">Tables</Label>
+          <Label className="block px-3 pt-2 text-xs font-medium text-muted-foreground">Add Tables</Label>
           <ScrollArea className="h-[calc(100vh-380px)] px-1">
             <div className="p-1">
               {filteredTables.map((t) => {
@@ -438,20 +483,26 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
                 return (
                   <div
                     key={`${t.schema}.${t.name}`}
-                    className="group flex items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent"
+                    className="group flex items-center gap-2 rounded border border-transparent px-2 py-1.5 text-xs hover:border-border hover:bg-accent"
                   >
                     <TableIcon className="h-3 w-3 text-muted-foreground" />
-                    <span className="flex-1 truncate font-mono">{t.name}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate font-mono">{t.name}</div>
+                      <div className="truncate text-[10px] text-muted-foreground">{t.schema}</div>
+                    </div>
                     {count > 0 && (
                       <Badge variant="secondary" className="h-4 px-1 text-[10px]">×{count}</Badge>
                     )}
-                    <button
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
                       onClick={() => addTableInstance(t)}
-                      className="rounded p-0.5 text-emerald-500 opacity-0 hover:bg-emerald-500/10 group-hover:opacity-100"
+                      className="h-6 px-1.5 text-[11px]"
                       title="Add instance"
                     >
-                      <Plus className="h-3.5 w-3.5" />
-                    </button>
+                      <Plus className="mr-1 h-3 w-3" /> Add
+                    </Button>
                   </div>
                 );
               })}
@@ -462,25 +513,33 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
           <div className="mb-2 flex items-center justify-between">
             <Label className="text-xs font-medium">Selected Tables ({selected.length})</Label>
             {selected.length > 0 && (
-              <button onClick={() => setSelected([])} className="text-[11px] text-primary hover:underline">
+              <button onClick={clearSelectedTables} className="text-[11px] text-primary hover:underline">
                 Clear All
               </button>
             )}
           </div>
-          <div className="space-y-1 max-h-40 overflow-auto">
+          <div className="space-y-1.5 max-h-48 overflow-auto">
             {selected.map((t) => (
-              <div key={t.alias} className="flex items-center gap-1.5 rounded border border-border bg-background/60 px-2 py-1 text-xs">
-                <span className="truncate font-mono flex-1" title={`${t.schema}.${t.name}`}>{t.name}</span>
-                <span className="text-muted-foreground">as</span>
-                <Input
-                  defaultValue={t.alias}
-                  onBlur={(e) => renameAlias(t.alias, e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
-                  className="h-6 w-16 px-1 py-0 text-xs font-mono"
-                />
-                <button onClick={() => removeInstance(t.alias)} className="text-muted-foreground hover:text-destructive">
-                  <X className="h-3 w-3" />
-                </button>
+              <div key={t.instanceId} className="rounded border border-border bg-background/60 px-2 py-1.5 text-xs">
+                <div className="mb-1 flex items-center gap-1.5">
+                  <TableIcon className="h-3 w-3 text-muted-foreground" />
+                  <span className="truncate font-mono font-medium flex-1" title={`${t.schema}.${t.name}`}>{t.name}</span>
+                  <button onClick={() => removeInstance(t.alias)} className="text-muted-foreground hover:text-destructive" title="Remove instance">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] text-muted-foreground">Alias</span>
+                  <Input
+                    key={t.alias}
+                    defaultValue={t.alias}
+                    onBlur={(e) => {
+                      if (!renameAlias(t.alias, e.target.value)) e.currentTarget.value = t.alias;
+                    }}
+                    onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                    className="h-6 flex-1 px-1.5 py-0 text-xs font-mono"
+                  />
+                </div>
               </div>
             ))}
             {!selected.length && (
