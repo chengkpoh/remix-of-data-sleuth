@@ -1362,20 +1362,43 @@ Apply
                 </tr>
               </thead>
               <tbody>
-                {pageRows.map((r, i) => (
-                  <tr key={i} className="border-b border-border/50 hover:bg-accent/30">
-                    {visibleCols.map((c) => (
-                      <td
-                        key={c}
-                        style={{ width: colWidths[c] ?? 160 }}
-                        className="px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis"
-                      >
-                        {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
-                      </td>
+                {isGrouped
+                  ? renderNodes(groupedTree, 0, visibleCols)
+                  : pageRows.map((r, i) => (
+                      <tr key={i} className="border-b border-border/50 hover:bg-accent/30">
+                        {visibleCols.map((c) => (
+                          <td
+                            key={c}
+                            style={{ width: colWidths[c] ?? 160 }}
+                            className="px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis"
+                          >
+                            {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
+                          </td>
+                        ))}
+                      </tr>
                     ))}
-                  </tr>
-                ))}
               </tbody>
+              {hasSummaries && (
+                <tfoot className="sticky bottom-0 z-10 bg-card/95 backdrop-blur">
+                  <tr className="border-t-2 border-border font-semibold">
+                    {visibleCols.map((c, idx) => {
+                      const aggs = aggregates[c];
+                      const parts = aggs
+                        ? Array.from(aggs).map((a) => `${AGG_LABEL[a]}: ${fmtAgg(calcAgg(filteredRows, c, a))}`)
+                        : [];
+                      return (
+                        <td
+                          key={c}
+                          style={{ width: colWidths[c] ?? 160 }}
+                          className="px-3 py-1.5 text-[11px] whitespace-nowrap overflow-hidden text-ellipsis"
+                        >
+                          {idx === 0 && !parts.length ? "Grand Total" : parts.join("  ·  ")}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                </tfoot>
+              )}
             </table>
           )}
         </div>
@@ -1383,14 +1406,20 @@ Apply
 
         {resultRows.length > 0 && (
           <div className="flex items-center justify-between border-t border-border bg-card/30 px-4 py-2 text-xs">
-            <span className="text-muted-foreground">Total rows: {resultRows.length}</span>
-            <div className="flex items-center gap-1">
-              <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>‹</Button>
-              <span className="px-2">{page} / {totalPages}</span>
-              <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>›</Button>
-            </div>
+            <span className="text-muted-foreground">
+              Total rows: {resultRows.length}
+              {isGrouped && <> · Grouped by {groupBy.join(" → ")}</>}
+            </span>
+            {!isGrouped && (
+              <div className="flex items-center gap-1">
+                <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>‹</Button>
+                <span className="px-2">{page} / {totalPages}</span>
+                <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>›</Button>
+              </div>
+            )}
           </div>
         )}
+
       </main>
 
       {/* Load dialog */}
