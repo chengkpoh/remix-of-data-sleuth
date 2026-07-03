@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Play, Save, FolderOpen, Trash2, Download, Copy, Plus, X, Table as TableIcon, Loader2, Link2, Columns, Eye, EyeOff, GripVertical,
+  Play, Save, FolderOpen, Trash2, Download, Copy, Plus, X, Table as TableIcon, Loader2, Link2, Columns, Eye, EyeOff, GripVertical, Layers, Sigma, ChevronRight, ChevronDown,
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
@@ -98,6 +98,61 @@ interface SavedQuery {
   savedAt: number;
 }
 
+// ---- Grouping / Aggregation helpers ----
+type Agg = "sum" | "count" | "avg" | "min" | "max";
+const AGG_LABEL: Record<Agg, string> = { sum: "Sum", count: "Count", avg: "Avg", min: "Min", max: "Max" };
+const ALL_AGGS: Agg[] = ["sum", "count", "avg", "min", "max"];
+
+function calcAgg(rows: Record<string, unknown>[], col: string, agg: Agg): number | string {
+  if (agg === "count") return rows.length;
+  const nums: number[] = [];
+  for (const r of rows) {
+    const v = r[col];
+    if (v == null || v === "") continue;
+    const n = typeof v === "number" ? v : Number(v);
+    if (!Number.isNaN(n)) nums.push(n);
+  }
+  if (!nums.length) return "";
+  if (agg === "sum") return nums.reduce((a, b) => a + b, 0);
+  if (agg === "avg") return nums.reduce((a, b) => a + b, 0) / nums.length;
+  if (agg === "min") return Math.min(...nums);
+  if (agg === "max") return Math.max(...nums);
+  return "";
+}
+function fmtAgg(v: number | string): string {
+  if (typeof v !== "number") return String(v);
+  if (Number.isInteger(v)) return v.toString();
+  return v.toFixed(2);
+}
+
+interface GroupNode {
+  key: string;
+  label: string;
+  path: string;
+  rows: Record<string, unknown>[];
+  children?: GroupNode[];
+}
+function buildGroups(rows: Record<string, unknown>[], keys: string[], parentPath = ""): GroupNode[] {
+  if (!keys.length) return [];
+  const [head, ...rest] = keys;
+  const map = new Map<string, Record<string, unknown>[]>();
+  for (const r of rows) {
+    const k = r[head] == null ? "(null)" : String(r[head]);
+    if (!map.has(k)) map.set(k, []);
+    map.get(k)!.push(r);
+  }
+  return Array.from(map.entries()).map(([k, grs]) => {
+    const path = parentPath ? `${parentPath}▶${head}=${k}` : `${head}=${k}`;
+    return {
+      key: k,
+      label: `${head}: ${k}`,
+      path,
+      rows: grs,
+      children: rest.length ? buildGroups(grs, rest, path) : undefined,
+    };
+  });
+}
+
 export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean }) {
   const [tableSearch, setTableSearch] = useState("");
   const [showSystem, setShowSystem] = useState(false);
@@ -120,6 +175,9 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [columnFilters, setColumnFilters] = useState<Record<string, Set<string>>>({});
 const [filterOpen, setFilterOpen] = useState<string | null>(null);
+  const [groupBy, setGroupBy] = useState<string[]>([]);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [aggregates, setAggregates] = useState<Record<string, Set<Agg>>>({});
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
   const dragColRef = useRef<string | null>(null);
@@ -294,6 +352,13 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
       setColWidths({});
       setResultRows(res.rows);
       setPage(1);
+      setCollapsedGroups(new Set());
+      setGroupBy((g) => g.filter((c) => cols.includes(c)));
+      setAggregates((a) => {
+        const next: Record<string, Set<Agg>> = {};
+        for (const k of Object.keys(a)) if (cols.includes(k)) next[k] = a[k];
+        return next;
+      });
       toast.success(`${res.rows.length} row(s) in ${res.durationMs}ms`);
     } catch (e) {
       toast.error(`Query failed: ${(e as Error).message}`);
@@ -493,6 +558,80 @@ const showAllCols = () => {
     };
     window.addEventListener("mousemove", move);
     window.addEventListener("mouseup", up);
+  };
+
+  const toggleGroup = (path: string) =>
+    setCollapsedGroups((s) => { const n = new Set(s); if (n.has(path)) n.delete(path); else n.add(path); return n; });
+
+  const summaryCols = useMemo(() => Object.keys(aggregates), [aggregates]);
+  const hasSummaries = summaryCols.length > 0;
+  const isGrouped = groupBy.length > 0;
+
+  const groupedTree = useMemo(
+    () => (isGrouped ? buildGroups(filteredRows, groupBy) : []),
+    [isGrouped, filteredRows, groupBy],
+  );
+
+  // Render helpers used by the results table when grouping is active.
+  const renderGroupFooter = (nodePath: string, rows: Record<string, unknown>[], depth: number, visible: string[]) => (
+    <tr key={`gf-${nodePath}`} className="bg-muted/20 border-b border-border">
+      {visible.map((c, idx) => {
+        const aggs = aggregates[c];
+        const parts = aggs ? Array.from(aggs).map((a) => `${AGG_LABEL[a]}: ${fmtAgg(calcAgg(rows, c, a))}`) : [];
+        return (
+          <td
+            key={c}
+            style={{ width: colWidths[c] ?? 160, paddingLeft: idx === 0 ? 12 + (depth + 1) * 14 : undefined }}
+            className="px-3 py-1 text-[11px] font-medium text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis"
+          >
+            {idx === 0 && !parts.length ? "Subtotal" : parts.join("  ·  ")}
+          </td>
+        );
+      })}
+    </tr>
+  );
+
+  const renderNodes = (nodes: GroupNode[], depth: number, visible: string[]): React.ReactNode[] => {
+    const out: React.ReactNode[] = [];
+    for (const node of nodes) {
+      const isCollapsed = collapsedGroups.has(node.path);
+      out.push(
+        <tr key={`gh-${node.path}`} className="bg-muted/40 border-b border-border">
+          <td colSpan={visible.length} className="px-3 py-1.5 text-xs" style={{ paddingLeft: 12 + depth * 14 }}>
+            <button
+              onClick={() => toggleGroup(node.path)}
+              className="flex items-center gap-1 font-semibold text-foreground hover:text-primary"
+            >
+              {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+              <span className="font-mono">{node.label}</span>
+              <Badge variant="secondary" className="ml-1.5 text-[10px]">{node.rows.length}</Badge>
+            </button>
+          </td>
+        </tr>,
+      );
+      if (isCollapsed) continue;
+      if (node.children && node.children.length) {
+        out.push(...renderNodes(node.children, depth + 1, visible));
+      } else {
+        node.rows.forEach((r, i) => {
+          out.push(
+            <tr key={`gr-${node.path}-${i}`} className="border-b border-border/50 hover:bg-accent/30">
+              {visible.map((c, idx) => (
+                <td
+                  key={c}
+                  style={{ width: colWidths[c] ?? 160, paddingLeft: idx === 0 ? 12 + (depth + 1) * 14 : undefined }}
+                  className="px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis"
+                >
+                  {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
+                </td>
+              ))}
+            </tr>,
+          );
+        });
+      }
+      if (hasSummaries) out.push(renderGroupFooter(node.path, node.rows, depth, visible));
+    }
+    return out;
   };
 
   // ===== render =====
@@ -870,6 +1009,116 @@ const showAllCols = () => {
             <Button variant="ghost" size="sm" onClick={copyResults} disabled={!resultRows.length}>
               <Copy className="mr-1.5 h-3.5 w-3.5" /> Copy
             </Button>
+
+            {/* Group By */}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="sm" disabled={!resultCols.length}>
+                  <Layers className="mr-1.5 h-3.5 w-3.5" /> Group By
+                  {groupBy.length > 0 && (
+                    <Badge variant="secondary" className="ml-1.5 text-[10px]">{groupBy.length}</Badge>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-72 p-2">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold">Group by columns (in order)</span>
+                  {groupBy.length > 0 && (
+                    <button className="text-[11px] text-primary hover:underline" onClick={() => setGroupBy([])}>Clear</button>
+                  )}
+                </div>
+                {groupBy.length > 0 && (
+                  <div className="mb-2 space-y-1">
+                    {groupBy.map((c, i) => (
+                      <div key={c} className="flex items-center gap-1 rounded border border-border bg-background/60 px-2 py-1 text-xs">
+                        <span className="w-4 text-[10px] text-muted-foreground">{i + 1}.</span>
+                        <span className="flex-1 truncate font-mono">{c}</span>
+                        <button
+                          disabled={i === 0}
+                          onClick={() => setGroupBy((g) => { const n = [...g]; [n[i - 1], n[i]] = [n[i], n[i - 1]]; return n; })}
+                          className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+                          title="Move up"
+                        >↑</button>
+                        <button
+                          disabled={i === groupBy.length - 1}
+                          onClick={() => setGroupBy((g) => { const n = [...g]; [n[i], n[i + 1]] = [n[i + 1], n[i]]; return n; })}
+                          className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+                          title="Move down"
+                        >↓</button>
+                        <button onClick={() => setGroupBy((g) => g.filter((x) => x !== c))} className="text-muted-foreground hover:text-destructive">
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <Select value="" onValueChange={(v) => setGroupBy((g) => (g.includes(v) ? g : [...g, v]))}>
+                  <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="Add column…" /></SelectTrigger>
+                  <SelectContent>
+                    {resultCols.filter((c) => !groupBy.includes(c)).map((c) => (
+                      <SelectItem key={c} value={c}>{c}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="mt-2 text-[10px] text-muted-foreground">
+                  Group headers are collapsible. Group footers show summaries configured under "Summaries".
+                </div>
+              </PopoverContent>
+            </Popover>
+
+            {/* Summaries */}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="sm" disabled={!resultCols.length}>
+                  <Sigma className="mr-1.5 h-3.5 w-3.5" /> Summaries
+                  {Object.keys(aggregates).length > 0 && (
+                    <Badge variant="secondary" className="ml-1.5 text-[10px]">{Object.keys(aggregates).length}</Badge>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-80 p-2">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold">Column summaries</span>
+                  {Object.keys(aggregates).length > 0 && (
+                    <button className="text-[11px] text-primary hover:underline" onClick={() => setAggregates({})}>Clear all</button>
+                  )}
+                </div>
+                <div className="mb-2 text-[10px] text-muted-foreground">
+                  Applied to each group footer and the grand total footer.
+                </div>
+                <ScrollArea className="h-64">
+                  <div className="space-y-1.5 pr-2">
+                    {resultCols.map((c) => {
+                      const set = aggregates[c] ?? new Set<Agg>();
+                      return (
+                        <div key={c} className="rounded border border-border/60 bg-background/40 px-2 py-1.5">
+                          <div className="mb-1 truncate font-mono text-[11px]">{c}</div>
+                          <div className="flex flex-wrap gap-1">
+                            {ALL_AGGS.map((a) => {
+                              const on = set.has(a);
+                              return (
+                                <button
+                                  key={a}
+                                  onClick={() => setAggregates((prev) => {
+                                    const cur = new Set(prev[c] ?? []);
+                                    if (on) cur.delete(a); else cur.add(a);
+                                    const next = { ...prev };
+                                    if (cur.size) next[c] = cur; else delete next[c];
+                                    return next;
+                                  })}
+                                  className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${on ? "border-primary bg-primary text-primary-foreground" : "border-border text-muted-foreground hover:text-foreground"}`}
+                                >{AGG_LABEL[a]}</button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </ScrollArea>
+              </PopoverContent>
+            </Popover>
+
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="sm" disabled={!resultCols.length}>
@@ -1113,20 +1362,43 @@ Apply
                 </tr>
               </thead>
               <tbody>
-                {pageRows.map((r, i) => (
-                  <tr key={i} className="border-b border-border/50 hover:bg-accent/30">
-                    {visibleCols.map((c) => (
-                      <td
-                        key={c}
-                        style={{ width: colWidths[c] ?? 160 }}
-                        className="px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis"
-                      >
-                        {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
-                      </td>
+                {isGrouped
+                  ? renderNodes(groupedTree, 0, visibleCols)
+                  : pageRows.map((r, i) => (
+                      <tr key={i} className="border-b border-border/50 hover:bg-accent/30">
+                        {visibleCols.map((c) => (
+                          <td
+                            key={c}
+                            style={{ width: colWidths[c] ?? 160 }}
+                            className="px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis"
+                          >
+                            {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
+                          </td>
+                        ))}
+                      </tr>
                     ))}
-                  </tr>
-                ))}
               </tbody>
+              {hasSummaries && (
+                <tfoot className="sticky bottom-0 z-10 bg-card/95 backdrop-blur">
+                  <tr className="border-t-2 border-border font-semibold">
+                    {visibleCols.map((c, idx) => {
+                      const aggs = aggregates[c];
+                      const parts = aggs
+                        ? Array.from(aggs).map((a) => `${AGG_LABEL[a]}: ${fmtAgg(calcAgg(filteredRows, c, a))}`)
+                        : [];
+                      return (
+                        <td
+                          key={c}
+                          style={{ width: colWidths[c] ?? 160 }}
+                          className="px-3 py-1.5 text-[11px] whitespace-nowrap overflow-hidden text-ellipsis"
+                        >
+                          {idx === 0 && !parts.length ? "Grand Total" : parts.join("  ·  ")}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                </tfoot>
+              )}
             </table>
           )}
         </div>
@@ -1134,14 +1406,20 @@ Apply
 
         {resultRows.length > 0 && (
           <div className="flex items-center justify-between border-t border-border bg-card/30 px-4 py-2 text-xs">
-            <span className="text-muted-foreground">Total rows: {resultRows.length}</span>
-            <div className="flex items-center gap-1">
-              <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>‹</Button>
-              <span className="px-2">{page} / {totalPages}</span>
-              <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>›</Button>
-            </div>
+            <span className="text-muted-foreground">
+              Total rows: {resultRows.length}
+              {isGrouped && <> · Grouped by {groupBy.join(" → ")}</>}
+            </span>
+            {!isGrouped && (
+              <div className="flex items-center gap-1">
+                <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>‹</Button>
+                <span className="px-2">{page} / {totalPages}</span>
+                <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>›</Button>
+              </div>
+            )}
           </div>
         )}
+
       </main>
 
       {/* Load dialog */}
