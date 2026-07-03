@@ -560,6 +560,80 @@ const showAllCols = () => {
     window.addEventListener("mouseup", up);
   };
 
+  const toggleGroup = (path: string) =>
+    setCollapsedGroups((s) => { const n = new Set(s); if (n.has(path)) n.delete(path); else n.add(path); return n; });
+
+  const summaryCols = useMemo(() => Object.keys(aggregates), [aggregates]);
+  const hasSummaries = summaryCols.length > 0;
+  const isGrouped = groupBy.length > 0;
+
+  const groupedTree = useMemo(
+    () => (isGrouped ? buildGroups(filteredRows, groupBy) : []),
+    [isGrouped, filteredRows, groupBy],
+  );
+
+  // Render helpers used by the results table when grouping is active.
+  const renderGroupFooter = (nodePath: string, rows: Record<string, unknown>[], depth: number, visible: string[]) => (
+    <tr key={`gf-${nodePath}`} className="bg-muted/20 border-b border-border">
+      {visible.map((c, idx) => {
+        const aggs = aggregates[c];
+        const parts = aggs ? Array.from(aggs).map((a) => `${AGG_LABEL[a]}: ${fmtAgg(calcAgg(rows, c, a))}`) : [];
+        return (
+          <td
+            key={c}
+            style={{ width: colWidths[c] ?? 160, paddingLeft: idx === 0 ? 12 + (depth + 1) * 14 : undefined }}
+            className="px-3 py-1 text-[11px] font-medium text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis"
+          >
+            {idx === 0 && !parts.length ? "Subtotal" : parts.join("  ·  ")}
+          </td>
+        );
+      })}
+    </tr>
+  );
+
+  const renderNodes = (nodes: GroupNode[], depth: number, visible: string[]): React.ReactNode[] => {
+    const out: React.ReactNode[] = [];
+    for (const node of nodes) {
+      const isCollapsed = collapsedGroups.has(node.path);
+      out.push(
+        <tr key={`gh-${node.path}`} className="bg-muted/40 border-b border-border">
+          <td colSpan={visible.length} className="px-3 py-1.5 text-xs" style={{ paddingLeft: 12 + depth * 14 }}>
+            <button
+              onClick={() => toggleGroup(node.path)}
+              className="flex items-center gap-1 font-semibold text-foreground hover:text-primary"
+            >
+              {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+              <span className="font-mono">{node.label}</span>
+              <Badge variant="secondary" className="ml-1.5 text-[10px]">{node.rows.length}</Badge>
+            </button>
+          </td>
+        </tr>,
+      );
+      if (isCollapsed) continue;
+      if (node.children && node.children.length) {
+        out.push(...renderNodes(node.children, depth + 1, visible));
+      } else {
+        node.rows.forEach((r, i) => {
+          out.push(
+            <tr key={`gr-${node.path}-${i}`} className="border-b border-border/50 hover:bg-accent/30">
+              {visible.map((c, idx) => (
+                <td
+                  key={c}
+                  style={{ width: colWidths[c] ?? 160, paddingLeft: idx === 0 ? 12 + (depth + 1) * 14 : undefined }}
+                  className="px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis"
+                >
+                  {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
+                </td>
+              ))}
+            </tr>,
+          );
+        });
+      }
+      if (hasSummaries) out.push(renderGroupFooter(node.path, node.rows, depth, visible));
+    }
+    return out;
+  };
+
   // ===== render =====
   return (
     <div className="grid grid-cols-[360px_1fr] min-h-[calc(100vh-49px)]">
