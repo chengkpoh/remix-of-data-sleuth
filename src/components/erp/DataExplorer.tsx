@@ -153,6 +153,7 @@ function buildGroups(rows: Record<string, unknown>[], keys: string[], parentPath
   });
 }
 
+export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean }) {
   const [tableSearch, setTableSearch] = useState("");
   const [showSystem, setShowSystem] = useState(false);
   const [selected, setSelected] = useState<SelectedTable[]>([]);
