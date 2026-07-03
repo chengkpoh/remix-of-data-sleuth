@@ -98,7 +98,61 @@ interface SavedQuery {
   savedAt: number;
 }
 
-export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean }) {
+// ---- Grouping / Aggregation helpers ----
+type Agg = "sum" | "count" | "avg" | "min" | "max";
+const AGG_LABEL: Record<Agg, string> = { sum: "Sum", count: "Count", avg: "Avg", min: "Min", max: "Max" };
+const ALL_AGGS: Agg[] = ["sum", "count", "avg", "min", "max"];
+
+function calcAgg(rows: Record<string, unknown>[], col: string, agg: Agg): number | string {
+  if (agg === "count") return rows.length;
+  const nums: number[] = [];
+  for (const r of rows) {
+    const v = r[col];
+    if (v == null || v === "") continue;
+    const n = typeof v === "number" ? v : Number(v);
+    if (!Number.isNaN(n)) nums.push(n);
+  }
+  if (!nums.length) return "";
+  if (agg === "sum") return nums.reduce((a, b) => a + b, 0);
+  if (agg === "avg") return nums.reduce((a, b) => a + b, 0) / nums.length;
+  if (agg === "min") return Math.min(...nums);
+  if (agg === "max") return Math.max(...nums);
+  return "";
+}
+function fmtAgg(v: number | string): string {
+  if (typeof v !== "number") return String(v);
+  if (Number.isInteger(v)) return v.toString();
+  return v.toFixed(2);
+}
+
+interface GroupNode {
+  key: string;
+  label: string;
+  path: string;
+  rows: Record<string, unknown>[];
+  children?: GroupNode[];
+}
+function buildGroups(rows: Record<string, unknown>[], keys: string[], parentPath = ""): GroupNode[] {
+  if (!keys.length) return [];
+  const [head, ...rest] = keys;
+  const map = new Map<string, Record<string, unknown>[]>();
+  for (const r of rows) {
+    const k = r[head] == null ? "(null)" : String(r[head]);
+    if (!map.has(k)) map.set(k, []);
+    map.get(k)!.push(r);
+  }
+  return Array.from(map.entries()).map(([k, grs]) => {
+    const path = parentPath ? `${parentPath}▶${head}=${k}` : `${head}=${k}`;
+    return {
+      key: k,
+      label: `${head}: ${k}`,
+      path,
+      rows: grs,
+      children: rest.length ? buildGroups(grs, rest, path) : undefined,
+    };
+  });
+}
+
   const [tableSearch, setTableSearch] = useState("");
   const [showSystem, setShowSystem] = useState(false);
   const [selected, setSelected] = useState<SelectedTable[]>([]);
