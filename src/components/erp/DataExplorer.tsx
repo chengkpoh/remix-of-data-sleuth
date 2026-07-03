@@ -935,6 +935,116 @@ const showAllCols = () => {
             <Button variant="ghost" size="sm" onClick={copyResults} disabled={!resultRows.length}>
               <Copy className="mr-1.5 h-3.5 w-3.5" /> Copy
             </Button>
+
+            {/* Group By */}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="sm" disabled={!resultCols.length}>
+                  <Layers className="mr-1.5 h-3.5 w-3.5" /> Group By
+                  {groupBy.length > 0 && (
+                    <Badge variant="secondary" className="ml-1.5 text-[10px]">{groupBy.length}</Badge>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-72 p-2">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold">Group by columns (in order)</span>
+                  {groupBy.length > 0 && (
+                    <button className="text-[11px] text-primary hover:underline" onClick={() => setGroupBy([])}>Clear</button>
+                  )}
+                </div>
+                {groupBy.length > 0 && (
+                  <div className="mb-2 space-y-1">
+                    {groupBy.map((c, i) => (
+                      <div key={c} className="flex items-center gap-1 rounded border border-border bg-background/60 px-2 py-1 text-xs">
+                        <span className="w-4 text-[10px] text-muted-foreground">{i + 1}.</span>
+                        <span className="flex-1 truncate font-mono">{c}</span>
+                        <button
+                          disabled={i === 0}
+                          onClick={() => setGroupBy((g) => { const n = [...g]; [n[i - 1], n[i]] = [n[i], n[i - 1]]; return n; })}
+                          className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+                          title="Move up"
+                        >↑</button>
+                        <button
+                          disabled={i === groupBy.length - 1}
+                          onClick={() => setGroupBy((g) => { const n = [...g]; [n[i], n[i + 1]] = [n[i + 1], n[i]]; return n; })}
+                          className="text-muted-foreground hover:text-foreground disabled:opacity-30"
+                          title="Move down"
+                        >↓</button>
+                        <button onClick={() => setGroupBy((g) => g.filter((x) => x !== c))} className="text-muted-foreground hover:text-destructive">
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <Select value="" onValueChange={(v) => setGroupBy((g) => (g.includes(v) ? g : [...g, v]))}>
+                  <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="Add column…" /></SelectTrigger>
+                  <SelectContent>
+                    {resultCols.filter((c) => !groupBy.includes(c)).map((c) => (
+                      <SelectItem key={c} value={c}>{c}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <div className="mt-2 text-[10px] text-muted-foreground">
+                  Group headers are collapsible. Group footers show summaries configured under "Summaries".
+                </div>
+              </PopoverContent>
+            </Popover>
+
+            {/* Summaries */}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="sm" disabled={!resultCols.length}>
+                  <Sigma className="mr-1.5 h-3.5 w-3.5" /> Summaries
+                  {Object.keys(aggregates).length > 0 && (
+                    <Badge variant="secondary" className="ml-1.5 text-[10px]">{Object.keys(aggregates).length}</Badge>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-80 p-2">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold">Column summaries</span>
+                  {Object.keys(aggregates).length > 0 && (
+                    <button className="text-[11px] text-primary hover:underline" onClick={() => setAggregates({})}>Clear all</button>
+                  )}
+                </div>
+                <div className="mb-2 text-[10px] text-muted-foreground">
+                  Applied to each group footer and the grand total footer.
+                </div>
+                <ScrollArea className="h-64">
+                  <div className="space-y-1.5 pr-2">
+                    {resultCols.map((c) => {
+                      const set = aggregates[c] ?? new Set<Agg>();
+                      return (
+                        <div key={c} className="rounded border border-border/60 bg-background/40 px-2 py-1.5">
+                          <div className="mb-1 truncate font-mono text-[11px]">{c}</div>
+                          <div className="flex flex-wrap gap-1">
+                            {ALL_AGGS.map((a) => {
+                              const on = set.has(a);
+                              return (
+                                <button
+                                  key={a}
+                                  onClick={() => setAggregates((prev) => {
+                                    const cur = new Set(prev[c] ?? []);
+                                    if (on) cur.delete(a); else cur.add(a);
+                                    const next = { ...prev };
+                                    if (cur.size) next[c] = cur; else delete next[c];
+                                    return next;
+                                  })}
+                                  className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${on ? "border-primary bg-primary text-primary-foreground" : "border-border text-muted-foreground hover:text-foreground"}`}
+                                >{AGG_LABEL[a]}</button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </ScrollArea>
+              </PopoverContent>
+            </Popover>
+
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="sm" disabled={!resultCols.length}>
