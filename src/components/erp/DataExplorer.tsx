@@ -352,6 +352,13 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
       setColWidths({});
       setResultRows(res.rows);
       setPage(1);
+      setCollapsedGroups(new Set());
+      setGroupBy((g) => g.filter((c) => cols.includes(c)));
+      setAggregates((a) => {
+        const next: Record<string, Set<Agg>> = {};
+        for (const k of Object.keys(a)) if (cols.includes(k)) next[k] = a[k];
+        return next;
+      });
       toast.success(`${res.rows.length} row(s) in ${res.durationMs}ms`);
     } catch (e) {
       toast.error(`Query failed: ${(e as Error).message}`);
