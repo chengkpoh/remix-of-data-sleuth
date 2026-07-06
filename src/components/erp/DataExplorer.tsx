@@ -1223,6 +1223,132 @@ const showAllCols = () => {
               </PopoverContent>
             </Popover>
 
+            {/* Conditional Formatting */}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="sm" disabled={!resultCols.length}>
+                  <Palette className="mr-1.5 h-3.5 w-3.5" /> Format
+                  {formatRules.length > 0 && (
+                    <Badge variant="secondary" className="ml-1.5 text-[10px]">{formatRules.length}</Badge>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-[420px] p-2">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold">Conditional Formatting</span>
+                  <div className="flex items-center gap-2">
+                    {formatRules.length > 0 && (
+                      <button className="text-[11px] text-primary hover:underline" onClick={() => setFormatRules([])}>Clear all</button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 text-[11px]"
+                      onClick={() => setFormatRules((rs) => [
+                        ...rs,
+                        {
+                          id: newId(),
+                          column: resultCols[0] ?? "",
+                          op: ">",
+                          value: "",
+                          value2: "",
+                          bg: FMT_PRESETS[3].bg,
+                          fg: FMT_PRESETS[3].fg,
+                          bold: false,
+                        },
+                      ])}
+                    >
+                      <Plus className="mr-1 h-3 w-3" /> Add rule
+                    </Button>
+                  </div>
+                </div>
+                <div className="mb-2 text-[10px] text-muted-foreground">
+                  Rules highlight matching cells. Later rules override earlier ones. Client-side only.
+                </div>
+                <ScrollArea className="max-h-[360px]">
+                  <div className="space-y-2 pr-2">
+                    {formatRules.length === 0 && (
+                      <div className="rounded border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
+                        No rules yet. Click "Add rule" to highlight cells by condition.
+                      </div>
+                    )}
+                    {formatRules.map((r) => {
+                      const opDef = FMT_OPS.find((o) => o.value === r.op) ?? FMT_OPS[0];
+                      const patch = (p: Partial<FormatRule>) =>
+                        setFormatRules((all) => all.map((x) => (x.id === r.id ? { ...x, ...p } : x)));
+                      const currentPresetIdx = FMT_PRESETS.findIndex((p) => p.bg === r.bg && p.fg === r.fg);
+                      return (
+                        <div key={r.id} className="rounded border border-border/60 bg-background/40 p-2">
+                          <div className="mb-1.5 grid grid-cols-[1fr_120px_24px] items-center gap-1.5">
+                            <Select value={r.column} onValueChange={(v) => patch({ column: v })}>
+                              <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="Column" /></SelectTrigger>
+                              <SelectContent>
+                                {resultCols.map((c) => (
+                                  <SelectItem key={c} value={c}>{c}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <Select value={r.op} onValueChange={(v) => patch({ op: v as FmtOp })}>
+                              <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                {FMT_OPS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                              </SelectContent>
+                            </Select>
+                            <button
+                              onClick={() => setFormatRules((all) => all.filter((x) => x.id !== r.id))}
+                              className="text-muted-foreground hover:text-destructive"
+                              title="Delete rule"
+                            ><X className="h-3.5 w-3.5" /></button>
+                          </div>
+                          {opDef.needsValue && (
+                            <div className="mb-1.5 flex items-center gap-1.5">
+                              <Input
+                                value={r.value}
+                                onChange={(e) => patch({ value: e.target.value })}
+                                placeholder="Value"
+                                className="h-7 flex-1 text-xs"
+                              />
+                              {opDef.needsValue2 && (
+                                <Input
+                                  value={r.value2}
+                                  onChange={(e) => patch({ value2: e.target.value })}
+                                  placeholder="and"
+                                  className="h-7 flex-1 text-xs"
+                                />
+                              )}
+                            </div>
+                          )}
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-muted-foreground">Style</span>
+                            <div className="flex flex-wrap gap-1">
+                              {FMT_PRESETS.map((p, idx) => {
+                                const active = idx === currentPresetIdx;
+                                return (
+                                  <button
+                                    key={p.label}
+                                    onClick={() => patch({ bg: p.bg, fg: p.fg })}
+                                    title={p.label}
+                                    className={`h-5 w-8 rounded border text-[9px] font-semibold ${active ? "ring-2 ring-primary ring-offset-1 ring-offset-background" : "border-border"}`}
+                                    style={{ background: p.bg || "transparent", color: p.fg || undefined }}
+                                  >{p.label === "None" ? "—" : "Aa"}</button>
+                                );
+                              })}
+                            </div>
+                            <label className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground">
+                              <Checkbox checked={r.bold} onCheckedChange={(v) => patch({ bold: !!v })} />
+                              Bold
+                            </label>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </ScrollArea>
+              </PopoverContent>
+            </Popover>
+
+
+
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="sm" disabled={!resultCols.length}>
