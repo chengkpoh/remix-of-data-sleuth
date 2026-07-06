@@ -1387,7 +1387,7 @@ const showAllCols = () => {
                         ...rs,
                         {
                           id: newId(),
-                          column: resultCols[0] ?? "",
+                          column: allCols[0] ?? "",
                           op: ">",
                           value: "",
                           value2: "",
