@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Play, Save, FolderOpen, Trash2, Download, Copy, Plus, X, Table as TableIcon, Loader2, Link2, Columns, Eye, EyeOff, GripVertical, Layers, Sigma, ChevronRight, ChevronDown, Palette,
+  Play, Save, FolderOpen, Trash2, Download, Copy, Plus, X, Table as TableIcon, Loader2, Link2, Columns, Eye, EyeOff, GripVertical, Layers, Sigma, ChevronRight, ChevronDown, Palette, Calculator, Pencil,
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
@@ -252,6 +252,113 @@ function styleForCell(
   return { style, bold };
 }
 
+// ---- Calculated Columns (client-side, arithmetic only) ----
+interface CalcColumn {
+  id: string;
+  name: string;
+  expr: string;
+}
+
+function tokenizeExpr(src: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    if (/\s/.test(ch)) { i++; continue; }
+    if ("+-*/()".includes(ch)) { out.push(ch); i++; continue; }
+    if (/[0-9]/.test(ch) || (ch === "." && /[0-9]/.test(src[i + 1] ?? ""))) {
+      let j = i; while (j < src.length && /[0-9.]/.test(src[j])) j++;
+      out.push(src.slice(i, j)); i = j; continue;
+    }
+    if (ch === "[") {
+      const end = src.indexOf("]", i + 1);
+      if (end < 0) throw new Error("Unclosed [ in expression");
+      out.push("$" + src.slice(i + 1, end).trim());
+      i = end + 1; continue;
+    }
+    if (/[A-Za-z_]/.test(ch)) {
+      let j = i; while (j < src.length && /[A-Za-z0-9_.]/.test(src[j])) j++;
+      out.push("$" + src.slice(i, j)); i = j; continue;
+    }
+    throw new Error(`Unexpected character "${ch}"`);
+  }
+  return out;
+}
+
+function evalCalc(expr: string, row: Record<string, unknown>): number | null {
+  if (!expr.trim()) return null;
+  let tokens: string[];
+  try { tokens = tokenizeExpr(expr); } catch { return null; }
+  if (!tokens.length) return null;
+  let pos = 0;
+  const peek = () => tokens[pos];
+  const eat = () => tokens[pos++];
+
+  const parseAtom = (): number => {
+    const t = eat();
+    if (t === undefined) throw new Error("Unexpected end");
+    if (t === "(") {
+      const v = parseAddSub();
+      if (eat() !== ")") throw new Error("Missing )");
+      return v;
+    }
+    if (t === "-") return -parseAtom();
+    if (t === "+") return  parseAtom();
+    if (t.startsWith("$")) {
+      const name = t.slice(1);
+      const raw = row[name];
+      const n = typeof raw === "number" ? raw : Number(raw);
+      return Number.isFinite(n) ? n : NaN;
+    }
+    const n = Number(t);
+    if (!Number.isFinite(n)) throw new Error(`Bad number: ${t}`);
+    return n;
+  };
+  const parseMulDiv = (): number => {
+    let left = parseAtom();
+    while (peek() === "*" || peek() === "/") {
+      const op = eat();
+      const right = parseAtom();
+      left = op === "*" ? left * right : left / right;
+    }
+    return left;
+  };
+  const parseAddSub = (): number => {
+    let left = parseMulDiv();
+    while (peek() === "+" || peek() === "-") {
+      const op = eat();
+      const right = parseMulDiv();
+      left = op === "+" ? left + right : left - right;
+    }
+    return left;
+  };
+
+  try {
+    const v = parseAddSub();
+    if (pos !== tokens.length) return null;
+    return Number.isFinite(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function validateCalcExpr(expr: string, availableCols: string[]): { ok: boolean; error?: string } {
+  if (!expr.trim()) return { ok: false, error: "Empty expression" };
+  let tokens: string[];
+  try { tokens = tokenizeExpr(expr); } catch (e) { return { ok: false, error: (e as Error).message }; }
+  const missing = tokens
+    .filter((t) => t.startsWith("$"))
+    .map((t) => t.slice(1))
+    .filter((n) => !availableCols.includes(n) && !Number.isFinite(Number(n)));
+  if (missing.length) return { ok: false, error: `Unknown column(s): ${Array.from(new Set(missing)).join(", ")}` };
+  // dry-run
+  const sample: Record<string, unknown> = {};
+  for (const c of availableCols) sample[c] = 1;
+  const v = evalCalc(expr, sample);
+  if (v === null) return { ok: false, error: "Invalid expression" };
+  return { ok: true };
+}
+
 export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean }) {
   const [tableSearch, setTableSearch] = useState("");
   const [showSystem, setShowSystem] = useState(false);
@@ -278,6 +385,8 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [aggregates, setAggregates] = useState<Record<string, Set<Agg>>>({});
   const [formatRules, setFormatRules] = useState<FormatRule[]>([]);
+  const [calcCols, setCalcCols] = useState<CalcColumn[]>([]);
+  const [calcEditor, setCalcEditor] = useState<{ id: string | null; name: string; expr: string; error?: string } | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
   const dragColRef = useRef<string | null>(null);
@@ -447,19 +556,21 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
         ? res.columns
         : (res.rows[0] ? Object.keys(res.rows[0]) : []);
       setResultCols(cols);
-      setColOrder(cols);
+      const calcNames = calcCols.map((c) => c.name);
+      setColOrder([...cols, ...calcNames.filter((n) => !cols.includes(n))]);
       setHiddenCols(new Set());
       setColWidths({});
       setResultRows(res.rows);
       setPage(1);
       setCollapsedGroups(new Set());
-      setGroupBy((g) => g.filter((c) => cols.includes(c)));
+      const known = new Set([...cols, ...calcNames]);
+      setGroupBy((g) => g.filter((c) => known.has(c)));
       setAggregates((a) => {
         const next: Record<string, Set<Agg>> = {};
-        for (const k of Object.keys(a)) if (cols.includes(k)) next[k] = a[k];
+        for (const k of Object.keys(a)) if (known.has(k)) next[k] = a[k];
         return next;
       });
-      setFormatRules((rs) => rs.filter((r) => cols.includes(r.column)));
+      setFormatRules((rs) => rs.filter((r) => known.has(r.column)));
       toast.success(`${res.rows.length} row(s) in ${res.durationMs}ms`);
     } catch (e) {
       toast.error(`Query failed: ${(e as Error).message}`);
@@ -522,10 +633,38 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
     setSavedList(list);
   };
 
+  // ---- Calculated columns integration ----
+  const calcNames = useMemo(() => calcCols.map((c) => c.name), [calcCols]);
+  const allCols = useMemo(
+    () => [...resultCols, ...calcNames.filter((n) => !resultCols.includes(n))],
+    [resultCols, calcNames],
+  );
+  const augmentedRows = useMemo(() => {
+    if (!calcCols.length) return resultRows;
+    return resultRows.map((r) => {
+      const out: Record<string, unknown> = { ...r };
+      for (const c of calcCols) {
+        const v = evalCalc(c.expr, out);
+        out[c.name] = v;
+      }
+      return out;
+    });
+  }, [resultRows, calcCols]);
+
+  // Keep colOrder in sync when calc columns are added/removed.
+  useEffect(() => {
+    if (!resultCols.length) return;
+    setColOrder((prev) => {
+      const keep = prev.filter((c) => resultCols.includes(c) || calcNames.includes(c));
+      const missing = [...resultCols, ...calcNames].filter((c) => !keep.includes(c));
+      return [...keep, ...missing];
+    });
+  }, [calcNames, resultCols]);
+
   // ---- Results: sort + paginate ----
   const sortedRows = useMemo(() => {
-    if (!sortKey) return resultRows;
-    const arr = [...resultRows];
+    if (!sortKey) return augmentedRows;
+    const arr = [...augmentedRows];
     arr.sort((a, b) => {
       const av = a[sortKey] as unknown; const bv = b[sortKey] as unknown;
       if (av == null && bv == null) return 0;
@@ -536,7 +675,7 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
       return sortDir === "asc" ? as.localeCompare(bs) : bs.localeCompare(as);
     });
     return arr;
-  }, [resultRows, sortKey, sortDir]);
+  }, [augmentedRows, sortKey, sortDir]);
 
 const filteredRows = useMemo(() => {
   let rows = sortedRows;
@@ -565,15 +704,15 @@ const totalPages = Math.max(
 );
 
   const exportCSV = () => {
-    if (!resultRows.length) { toast.error("Nothing to export."); return; }
+    if (!augmentedRows.length) { toast.error("Nothing to export."); return; }
     const esc = (v: unknown) => {
       if (v == null) return "";
       const s = String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const csv = [
-      resultCols.join(","),
-      ...resultRows.map((r) => resultCols.map((c) => esc(r[c])).join(",")),
+      allCols.join(","),
+      ...augmentedRows.map((r) => allCols.map((c) => esc(r[c])).join(",")),
     ].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -584,10 +723,10 @@ const totalPages = Math.max(
     URL.revokeObjectURL(url);
   };
   const copyResults = async () => {
-    if (!resultRows.length) { toast.error("Nothing to copy."); return; }
+    if (!augmentedRows.length) { toast.error("Nothing to copy."); return; }
     const text = [
-      resultCols.join("\t"),
-      ...resultRows.map((r) => resultCols.map((c) => (r[c] == null ? "" : String(r[c]))).join("\t")),
+      allCols.join("\t"),
+      ...augmentedRows.map((r) => allCols.map((c) => (r[c] == null ? "" : String(r[c]))).join("\t")),
     ].join("\n");
     await navigator.clipboard.writeText(text);
     toast.success("Copied to clipboard");
@@ -597,12 +736,12 @@ const totalPages = Math.max(
   const getColumnValues = (col:string) => {
   return Array.from(
     new Set(
-      resultRows.map(r => String(r[col] ?? ""))
+      augmentedRows.map(r => String(r[col] ?? ""))
     )
   ).sort();
 };
   const hideAllCols = () => {
-  setHiddenCols(new Set(resultCols));
+  setHiddenCols(new Set(allCols));
 };
 
 const showAllCols = () => {
@@ -615,12 +754,12 @@ const showAllCols = () => {
   const filteredResultCols = useMemo(() => {
   const q = columnSearch.trim().toLowerCase();
 
-  if (!q) return resultCols;
+  if (!q) return allCols;
 
-  return resultCols.filter((c) =>
+  return allCols.filter((c) =>
     c.toLowerCase().includes(q)
   );
-}, [resultCols, columnSearch]);
+}, [allCols, columnSearch]);
   const hideCol = (c: string) => setHiddenCols((s) => new Set(s).add(c));
   const showCol = (c: string) => setHiddenCols((s) => {
     const n = new Set(s); n.delete(c); return n;
@@ -1159,7 +1298,7 @@ const showAllCols = () => {
                 <Select value="" onValueChange={(v) => setGroupBy((g) => (g.includes(v) ? g : [...g, v]))}>
                   <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="Add column…" /></SelectTrigger>
                   <SelectContent>
-                    {resultCols.filter((c) => !groupBy.includes(c)).map((c) => (
+                    {allCols.filter((c) => !groupBy.includes(c)).map((c) => (
                       <SelectItem key={c} value={c}>{c}</SelectItem>
                     ))}
                   </SelectContent>
@@ -1192,7 +1331,7 @@ const showAllCols = () => {
                 </div>
                 <ScrollArea className="h-64">
                   <div className="space-y-1.5 pr-2">
-                    {resultCols.map((c) => {
+                    {allCols.map((c) => {
                       const set = aggregates[c] ?? new Set<Agg>();
                       return (
                         <div key={c} className="rounded border border-border/60 bg-background/40 px-2 py-1.5">
@@ -1248,7 +1387,7 @@ const showAllCols = () => {
                         ...rs,
                         {
                           id: newId(),
-                          column: resultCols[0] ?? "",
+                          column: allCols[0] ?? "",
                           op: ">",
                           value: "",
                           value2: "",
@@ -1283,7 +1422,7 @@ const showAllCols = () => {
                             <Select value={r.column} onValueChange={(v) => patch({ column: v })}>
                               <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="Column" /></SelectTrigger>
                               <SelectContent>
-                                {resultCols.map((c) => (
+                                {allCols.map((c) => (
                                   <SelectItem key={c} value={c}>{c}</SelectItem>
                                 ))}
                               </SelectContent>
@@ -1347,6 +1486,62 @@ const showAllCols = () => {
               </PopoverContent>
             </Popover>
 
+            {/* Calculated Columns */}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="sm" disabled={!resultCols.length}>
+                  <Calculator className="mr-1.5 h-3.5 w-3.5" /> Calculated
+                  {calcCols.length > 0 && (
+                    <Badge variant="secondary" className="ml-1.5 text-[10px]">{calcCols.length}</Badge>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-96 p-2">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold">Calculated Columns</span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 text-[11px]"
+                    onClick={() => setCalcEditor({ id: null, name: "", expr: "" })}
+                  >
+                    <Plus className="mr-1 h-3 w-3" /> New
+                  </Button>
+                </div>
+                <div className="mb-2 text-[10px] text-muted-foreground">
+                  Client-side formulas. Reference columns by name, or wrap names with spaces in [brackets]. Supports + - * / ( ) and numeric constants.
+                </div>
+                {calcCols.length === 0 ? (
+                  <div className="rounded border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
+                    No calculated columns yet.
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {calcCols.map((c) => (
+                      <div key={c.id} className="rounded border border-border/60 bg-background/40 px-2 py-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <span className="flex-1 truncate font-mono text-xs font-medium">{c.name}</span>
+                          <button
+                            onClick={() => setCalcEditor({ id: c.id, name: c.name, expr: c.expr })}
+                            className="text-muted-foreground hover:text-primary"
+                            title="Edit"
+                          ><Pencil className="h-3.5 w-3.5" /></button>
+                          <button
+                            onClick={() => setCalcCols((all) => all.filter((x) => x.id !== c.id))}
+                            className="text-muted-foreground hover:text-destructive"
+                            title="Delete"
+                          ><X className="h-3.5 w-3.5" /></button>
+                        </div>
+                        <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">= {c.expr}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </PopoverContent>
+            </Popover>
+
+
+
 
 
             <Popover>
@@ -1370,7 +1565,7 @@ const showAllCols = () => {
       className="text-[11px] text-primary hover:underline"
       onClick={() => {
         setHiddenCols(new Set());
-        setColOrder(resultCols);
+        setColOrder(allCols);
         setColumnSearch("");
       }}
     >
@@ -1688,7 +1883,97 @@ Apply
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Calculated column editor */}
+      <Dialog open={!!calcEditor} onOpenChange={(v) => !v && setCalcEditor(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{calcEditor?.id ? "Edit Calculated Column" : "New Calculated Column"}</DialogTitle>
+          </DialogHeader>
+          {calcEditor && (
+            <div className="space-y-3">
+              <div>
+                <Label className="mb-1 block text-xs">Column Name</Label>
+                <Input
+                  value={calcEditor.name}
+                  onChange={(e) => setCalcEditor((s) => s ? { ...s, name: e.target.value } : s)}
+                  placeholder="e.g. NetTotal"
+                  className="h-8 text-xs font-mono"
+                />
+              </div>
+              <div>
+                <Label className="mb-1 block text-xs">Expression</Label>
+                <Input
+                  value={calcEditor.expr}
+                  onChange={(e) => setCalcEditor((s) => s ? { ...s, expr: e.target.value, error: undefined } : s)}
+                  placeholder="e.g. (Price * Qty) - Discount"
+                  className="h-8 text-xs font-mono"
+                />
+                <div className="mt-1 text-[10px] text-muted-foreground">
+                  Reference source columns by name. Wrap names containing spaces or dots in [brackets] (e.g. [Total Amount]).
+                  Supports + − × ÷ and parentheses. Result is numeric only.
+                </div>
+                {calcEditor.error && (
+                  <div className="mt-1 text-[11px] text-destructive">{calcEditor.error}</div>
+                )}
+              </div>
+              {resultCols.length > 0 && (
+                <div>
+                  <Label className="mb-1 block text-xs">Available columns</Label>
+                  <div className="max-h-28 overflow-auto rounded border border-border/60 bg-background/40 p-1.5">
+                    <div className="flex flex-wrap gap-1">
+                      {resultCols.map((c) => (
+                        <button
+                          key={c}
+                          onClick={() => setCalcEditor((s) => {
+                            if (!s) return s;
+                            const token = /[^A-Za-z0-9_]/.test(c) ? `[${c}]` : c;
+                            const sep = s.expr && !/[\s(+\-*/]$/.test(s.expr) ? " " : "";
+                            return { ...s, expr: s.expr + sep + token, error: undefined };
+                          })}
+                          className="rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[10px] hover:bg-accent"
+                        >{c}</button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCalcEditor(null)}>Cancel</Button>
+            <Button
+              onClick={() => {
+                if (!calcEditor) return;
+                const name = calcEditor.name.trim();
+                if (!name) { setCalcEditor((s) => s ? { ...s, error: "Name is required" } : s); return; }
+                if (!/^[A-Za-z_][A-Za-z0-9_ ]*$/.test(name)) {
+                  setCalcEditor((s) => s ? { ...s, error: "Name must start with a letter and use letters/digits/underscores/spaces" } : s);
+                  return;
+                }
+                if (resultCols.includes(name) && !calcEditor.id) {
+                  setCalcEditor((s) => s ? { ...s, error: "Name conflicts with an existing result column" } : s);
+                  return;
+                }
+                if (calcCols.some((c) => c.name === name && c.id !== calcEditor.id)) {
+                  setCalcEditor((s) => s ? { ...s, error: "Another calculated column already has this name" } : s);
+                  return;
+                }
+                const check = validateCalcExpr(calcEditor.expr, [...resultCols, ...calcCols.filter((c) => c.id !== calcEditor.id).map((c) => c.name)]);
+                if (!check.ok) { setCalcEditor((s) => s ? { ...s, error: check.error } : s); return; }
+                setCalcCols((all) => {
+                  if (calcEditor.id) return all.map((c) => c.id === calcEditor.id ? { ...c, name, expr: calcEditor.expr } : c);
+                  return [...all, { id: newId(), name, expr: calcEditor.expr }];
+                });
+                setCalcEditor(null);
+                toast.success(calcEditor.id ? "Calculated column updated" : "Calculated column added");
+              }}
+            >Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
+
   );
 }
 
