@@ -1470,15 +1470,18 @@ Apply
                   ? renderNodes(groupedTree, 0, visibleCols)
                   : pageRows.map((r, i) => (
                       <tr key={i} className="border-b border-border/50 hover:bg-accent/30">
-                        {visibleCols.map((c) => (
-                          <td
-                            key={c}
-                            style={{ width: colWidths[c] ?? 160 }}
-                            className="px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis"
-                          >
-                            {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
-                          </td>
-                        ))}
+                        {visibleCols.map((c) => {
+                          const fmt = styleForCell(c, r, formatRules);
+                          return (
+                            <td
+                              key={c}
+                              style={{ width: colWidths[c] ?? 160, ...fmt.style }}
+                              className={`px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis ${fmt.bold ? "font-bold" : ""}`}
+                            >
+                              {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
+                            </td>
+                          );
+                        })}
                       </tr>
                     ))}
               </tbody>
