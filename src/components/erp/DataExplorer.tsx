@@ -1883,7 +1883,97 @@ Apply
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Calculated column editor */}
+      <Dialog open={!!calcEditor} onOpenChange={(v) => !v && setCalcEditor(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{calcEditor?.id ? "Edit Calculated Column" : "New Calculated Column"}</DialogTitle>
+          </DialogHeader>
+          {calcEditor && (
+            <div className="space-y-3">
+              <div>
+                <Label className="mb-1 block text-xs">Column Name</Label>
+                <Input
+                  value={calcEditor.name}
+                  onChange={(e) => setCalcEditor((s) => s ? { ...s, name: e.target.value } : s)}
+                  placeholder="e.g. NetTotal"
+                  className="h-8 text-xs font-mono"
+                />
+              </div>
+              <div>
+                <Label className="mb-1 block text-xs">Expression</Label>
+                <Input
+                  value={calcEditor.expr}
+                  onChange={(e) => setCalcEditor((s) => s ? { ...s, expr: e.target.value, error: undefined } : s)}
+                  placeholder="e.g. (Price * Qty) - Discount"
+                  className="h-8 text-xs font-mono"
+                />
+                <div className="mt-1 text-[10px] text-muted-foreground">
+                  Reference source columns by name. Wrap names containing spaces or dots in [brackets] (e.g. [Total Amount]).
+                  Supports + − × ÷ and parentheses. Result is numeric only.
+                </div>
+                {calcEditor.error && (
+                  <div className="mt-1 text-[11px] text-destructive">{calcEditor.error}</div>
+                )}
+              </div>
+              {resultCols.length > 0 && (
+                <div>
+                  <Label className="mb-1 block text-xs">Available columns</Label>
+                  <div className="max-h-28 overflow-auto rounded border border-border/60 bg-background/40 p-1.5">
+                    <div className="flex flex-wrap gap-1">
+                      {resultCols.map((c) => (
+                        <button
+                          key={c}
+                          onClick={() => setCalcEditor((s) => {
+                            if (!s) return s;
+                            const token = /[^A-Za-z0-9_]/.test(c) ? `[${c}]` : c;
+                            const sep = s.expr && !/[\s(+\-*/]$/.test(s.expr) ? " " : "";
+                            return { ...s, expr: s.expr + sep + token, error: undefined };
+                          })}
+                          className="rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[10px] hover:bg-accent"
+                        >{c}</button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCalcEditor(null)}>Cancel</Button>
+            <Button
+              onClick={() => {
+                if (!calcEditor) return;
+                const name = calcEditor.name.trim();
+                if (!name) { setCalcEditor((s) => s ? { ...s, error: "Name is required" } : s); return; }
+                if (!/^[A-Za-z_][A-Za-z0-9_ ]*$/.test(name)) {
+                  setCalcEditor((s) => s ? { ...s, error: "Name must start with a letter and use letters/digits/underscores/spaces" } : s);
+                  return;
+                }
+                if (resultCols.includes(name) && !calcEditor.id) {
+                  setCalcEditor((s) => s ? { ...s, error: "Name conflicts with an existing result column" } : s);
+                  return;
+                }
+                if (calcCols.some((c) => c.name === name && c.id !== calcEditor.id)) {
+                  setCalcEditor((s) => s ? { ...s, error: "Another calculated column already has this name" } : s);
+                  return;
+                }
+                const check = validateCalcExpr(calcEditor.expr, [...resultCols, ...calcCols.filter((c) => c.id !== calcEditor.id).map((c) => c.name)]);
+                if (!check.ok) { setCalcEditor((s) => s ? { ...s, error: check.error } : s); return; }
+                setCalcCols((all) => {
+                  if (calcEditor.id) return all.map((c) => c.id === calcEditor.id ? { ...c, name, expr: calcEditor.expr } : c);
+                  return [...all, { id: newId(), name, expr: calcEditor.expr }];
+                });
+                setCalcEditor(null);
+                toast.success(calcEditor.id ? "Calculated column updated" : "Calculated column added");
+              }}
+            >Save</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
+
   );
 }
 
