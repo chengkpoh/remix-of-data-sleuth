@@ -1486,6 +1486,62 @@ const showAllCols = () => {
               </PopoverContent>
             </Popover>
 
+            {/* Calculated Columns */}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="sm" disabled={!resultCols.length}>
+                  <Calculator className="mr-1.5 h-3.5 w-3.5" /> Calculated
+                  {calcCols.length > 0 && (
+                    <Badge variant="secondary" className="ml-1.5 text-[10px]">{calcCols.length}</Badge>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-96 p-2">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold">Calculated Columns</span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-6 text-[11px]"
+                    onClick={() => setCalcEditor({ id: null, name: "", expr: "" })}
+                  >
+                    <Plus className="mr-1 h-3 w-3" /> New
+                  </Button>
+                </div>
+                <div className="mb-2 text-[10px] text-muted-foreground">
+                  Client-side formulas. Reference columns by name, or wrap names with spaces in [brackets]. Supports + - * / ( ) and numeric constants.
+                </div>
+                {calcCols.length === 0 ? (
+                  <div className="rounded border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
+                    No calculated columns yet.
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    {calcCols.map((c) => (
+                      <div key={c.id} className="rounded border border-border/60 bg-background/40 px-2 py-1.5">
+                        <div className="flex items-center gap-1.5">
+                          <span className="flex-1 truncate font-mono text-xs font-medium">{c.name}</span>
+                          <button
+                            onClick={() => setCalcEditor({ id: c.id, name: c.name, expr: c.expr })}
+                            className="text-muted-foreground hover:text-primary"
+                            title="Edit"
+                          ><Pencil className="h-3.5 w-3.5" /></button>
+                          <button
+                            onClick={() => setCalcCols((all) => all.filter((x) => x.id !== c.id))}
+                            className="text-muted-foreground hover:text-destructive"
+                            title="Delete"
+                          ><X className="h-3.5 w-3.5" /></button>
+                        </div>
+                        <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">= {c.expr}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </PopoverContent>
+            </Popover>
+
+
+
 
 
             <Popover>
