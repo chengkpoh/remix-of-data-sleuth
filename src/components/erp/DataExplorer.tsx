@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Play, Save, FolderOpen, Trash2, Download, Copy, Plus, X, Table as TableIcon, Loader2, Link2, Columns, Eye, EyeOff, GripVertical, Layers, Sigma, ChevronRight, ChevronDown,
+  Play, Save, FolderOpen, Trash2, Download, Copy, Plus, X, Table as TableIcon, Loader2, Link2, Columns, Eye, EyeOff, GripVertical, Layers, Sigma, ChevronRight, ChevronDown, Palette,
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
@@ -153,6 +153,105 @@ function buildGroups(rows: Record<string, unknown>[], keys: string[], parentPath
   });
 }
 
+// ---- Conditional Formatting ----
+type FmtOp =
+  | "=" | "!=" | ">" | "<" | ">=" | "<="
+  | "between" | "contains" | "notContains" | "startsWith" | "endsWith"
+  | "isNull" | "isNotNull" | "isTrue" | "isFalse";
+
+const FMT_OPS: { value: FmtOp; label: string; needsValue: boolean; needsValue2?: boolean }[] = [
+  { value: "=", label: "=", needsValue: true },
+  { value: "!=", label: "≠", needsValue: true },
+  { value: ">", label: ">", needsValue: true },
+  { value: "<", label: "<", needsValue: true },
+  { value: ">=", label: "≥", needsValue: true },
+  { value: "<=", label: "≤", needsValue: true },
+  { value: "between", label: "Between", needsValue: true, needsValue2: true },
+  { value: "contains", label: "Contains", needsValue: true },
+  { value: "notContains", label: "Not Contains", needsValue: true },
+  { value: "startsWith", label: "Starts With", needsValue: true },
+  { value: "endsWith", label: "Ends With", needsValue: true },
+  { value: "isNull", label: "Is Null", needsValue: false },
+  { value: "isNotNull", label: "Is Not Null", needsValue: false },
+  { value: "isTrue", label: "Is True", needsValue: false },
+  { value: "isFalse", label: "Is False", needsValue: false },
+];
+
+interface FormatRule {
+  id: string;
+  column: string;
+  op: FmtOp;
+  value: string;
+  value2: string;
+  bg: string;   // css color or ""
+  fg: string;   // css color or ""
+  bold: boolean;
+}
+
+const FMT_PRESETS: { label: string; bg: string; fg: string }[] = [
+  { label: "None",    bg: "",        fg: "" },
+  { label: "Red",     bg: "#fee2e2", fg: "#991b1b" },
+  { label: "Amber",   bg: "#fef3c7", fg: "#92400e" },
+  { label: "Green",   bg: "#dcfce7", fg: "#166534" },
+  { label: "Blue",    bg: "#dbeafe", fg: "#1e40af" },
+  { label: "Purple",  bg: "#ede9fe", fg: "#5b21b6" },
+  { label: "Slate",   bg: "#e2e8f0", fg: "#1e293b" },
+];
+
+function evalRule(rule: FormatRule, raw: unknown): boolean {
+  if (rule.op === "isNull") return raw == null || raw === "";
+  if (rule.op === "isNotNull") return !(raw == null || raw === "");
+  if (rule.op === "isTrue") return raw === true || raw === 1 || String(raw).toLowerCase() === "true";
+  if (rule.op === "isFalse") return raw === false || raw === 0 || String(raw).toLowerCase() === "false";
+  if (raw == null) return false;
+  const s = String(raw);
+  const vs = rule.value ?? "";
+  const asNum = (x: unknown) => {
+    const n = typeof x === "number" ? x : Number(x);
+    return Number.isNaN(n) ? null : n;
+  };
+  const numMode = asNum(raw) !== null && asNum(vs) !== null;
+  switch (rule.op) {
+    case "=":  return numMode ? asNum(raw) === asNum(vs) : s === vs;
+    case "!=": return numMode ? asNum(raw) !== asNum(vs) : s !== vs;
+    case ">":  return numMode ? (asNum(raw)! >  asNum(vs)!) : s >  vs;
+    case "<":  return numMode ? (asNum(raw)! <  asNum(vs)!) : s <  vs;
+    case ">=": return numMode ? (asNum(raw)! >= asNum(vs)!) : s >= vs;
+    case "<=": return numMode ? (asNum(raw)! <= asNum(vs)!) : s <= vs;
+    case "between": {
+      const a = asNum(vs), b = asNum(rule.value2);
+      const n = asNum(raw);
+      if (a != null && b != null && n != null) {
+        const lo = Math.min(a, b), hi = Math.max(a, b);
+        return n >= lo && n <= hi;
+      }
+      return s >= vs && s <= (rule.value2 ?? "");
+    }
+    case "contains":    return s.toLowerCase().includes(vs.toLowerCase());
+    case "notContains": return !s.toLowerCase().includes(vs.toLowerCase());
+    case "startsWith":  return s.toLowerCase().startsWith(vs.toLowerCase());
+    case "endsWith":    return s.toLowerCase().endsWith(vs.toLowerCase());
+  }
+  return false;
+}
+
+function styleForCell(
+  col: string,
+  row: Record<string, unknown>,
+  rules: FormatRule[],
+): { style: React.CSSProperties; bold: boolean } {
+  const style: React.CSSProperties = {};
+  let bold = false;
+  for (const r of rules) {
+    if (r.column !== col) continue;
+    if (!evalRule(r, row[col])) continue;
+    if (r.bg) style.backgroundColor = r.bg;
+    if (r.fg) style.color = r.fg;
+    if (r.bold) bold = true;
+  }
+  return { style, bold };
+}
+
 export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean }) {
   const [tableSearch, setTableSearch] = useState("");
   const [showSystem, setShowSystem] = useState(false);
@@ -178,6 +277,7 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
   const [groupBy, setGroupBy] = useState<string[]>([]);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [aggregates, setAggregates] = useState<Record<string, Set<Agg>>>({});
+  const [formatRules, setFormatRules] = useState<FormatRule[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
   const dragColRef = useRef<string | null>(null);
@@ -359,6 +459,7 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
         for (const k of Object.keys(a)) if (cols.includes(k)) next[k] = a[k];
         return next;
       });
+      setFormatRules((rs) => rs.filter((r) => cols.includes(r.column)));
       toast.success(`${res.rows.length} row(s) in ${res.durationMs}ms`);
     } catch (e) {
       toast.error(`Query failed: ${(e as Error).message}`);
@@ -616,15 +717,18 @@ const showAllCols = () => {
         node.rows.forEach((r, i) => {
           out.push(
             <tr key={`gr-${node.path}-${i}`} className="border-b border-border/50 hover:bg-accent/30">
-              {visible.map((c, idx) => (
-                <td
-                  key={c}
-                  style={{ width: colWidths[c] ?? 160, paddingLeft: idx === 0 ? 12 + (depth + 1) * 14 : undefined }}
-                  className="px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis"
-                >
-                  {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
-                </td>
-              ))}
+              {visible.map((c, idx) => {
+                const fmt = styleForCell(c, r, formatRules);
+                return (
+                  <td
+                    key={c}
+                    style={{ width: colWidths[c] ?? 160, paddingLeft: idx === 0 ? 12 + (depth + 1) * 14 : undefined, ...fmt.style }}
+                    className={`px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis ${fmt.bold ? "font-bold" : ""}`}
+                  >
+                    {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
+                  </td>
+                );
+              })}
             </tr>,
           );
         });
@@ -1119,6 +1223,132 @@ const showAllCols = () => {
               </PopoverContent>
             </Popover>
 
+            {/* Conditional Formatting */}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="ghost" size="sm" disabled={!resultCols.length}>
+                  <Palette className="mr-1.5 h-3.5 w-3.5" /> Format
+                  {formatRules.length > 0 && (
+                    <Badge variant="secondary" className="ml-1.5 text-[10px]">{formatRules.length}</Badge>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-[420px] p-2">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-xs font-semibold">Conditional Formatting</span>
+                  <div className="flex items-center gap-2">
+                    {formatRules.length > 0 && (
+                      <button className="text-[11px] text-primary hover:underline" onClick={() => setFormatRules([])}>Clear all</button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 text-[11px]"
+                      onClick={() => setFormatRules((rs) => [
+                        ...rs,
+                        {
+                          id: newId(),
+                          column: resultCols[0] ?? "",
+                          op: ">",
+                          value: "",
+                          value2: "",
+                          bg: FMT_PRESETS[3].bg,
+                          fg: FMT_PRESETS[3].fg,
+                          bold: false,
+                        },
+                      ])}
+                    >
+                      <Plus className="mr-1 h-3 w-3" /> Add rule
+                    </Button>
+                  </div>
+                </div>
+                <div className="mb-2 text-[10px] text-muted-foreground">
+                  Rules highlight matching cells. Later rules override earlier ones. Client-side only.
+                </div>
+                <ScrollArea className="max-h-[360px]">
+                  <div className="space-y-2 pr-2">
+                    {formatRules.length === 0 && (
+                      <div className="rounded border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
+                        No rules yet. Click "Add rule" to highlight cells by condition.
+                      </div>
+                    )}
+                    {formatRules.map((r) => {
+                      const opDef = FMT_OPS.find((o) => o.value === r.op) ?? FMT_OPS[0];
+                      const patch = (p: Partial<FormatRule>) =>
+                        setFormatRules((all) => all.map((x) => (x.id === r.id ? { ...x, ...p } : x)));
+                      const currentPresetIdx = FMT_PRESETS.findIndex((p) => p.bg === r.bg && p.fg === r.fg);
+                      return (
+                        <div key={r.id} className="rounded border border-border/60 bg-background/40 p-2">
+                          <div className="mb-1.5 grid grid-cols-[1fr_120px_24px] items-center gap-1.5">
+                            <Select value={r.column} onValueChange={(v) => patch({ column: v })}>
+                              <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="Column" /></SelectTrigger>
+                              <SelectContent>
+                                {resultCols.map((c) => (
+                                  <SelectItem key={c} value={c}>{c}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <Select value={r.op} onValueChange={(v) => patch({ op: v as FmtOp })}>
+                              <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
+                              <SelectContent>
+                                {FMT_OPS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                              </SelectContent>
+                            </Select>
+                            <button
+                              onClick={() => setFormatRules((all) => all.filter((x) => x.id !== r.id))}
+                              className="text-muted-foreground hover:text-destructive"
+                              title="Delete rule"
+                            ><X className="h-3.5 w-3.5" /></button>
+                          </div>
+                          {opDef.needsValue && (
+                            <div className="mb-1.5 flex items-center gap-1.5">
+                              <Input
+                                value={r.value}
+                                onChange={(e) => patch({ value: e.target.value })}
+                                placeholder="Value"
+                                className="h-7 flex-1 text-xs"
+                              />
+                              {opDef.needsValue2 && (
+                                <Input
+                                  value={r.value2}
+                                  onChange={(e) => patch({ value2: e.target.value })}
+                                  placeholder="and"
+                                  className="h-7 flex-1 text-xs"
+                                />
+                              )}
+                            </div>
+                          )}
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-muted-foreground">Style</span>
+                            <div className="flex flex-wrap gap-1">
+                              {FMT_PRESETS.map((p, idx) => {
+                                const active = idx === currentPresetIdx;
+                                return (
+                                  <button
+                                    key={p.label}
+                                    onClick={() => patch({ bg: p.bg, fg: p.fg })}
+                                    title={p.label}
+                                    className={`h-5 w-8 rounded border text-[9px] font-semibold ${active ? "ring-2 ring-primary ring-offset-1 ring-offset-background" : "border-border"}`}
+                                    style={{ background: p.bg || "transparent", color: p.fg || undefined }}
+                                  >{p.label === "None" ? "—" : "Aa"}</button>
+                                );
+                              })}
+                            </div>
+                            <label className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground">
+                              <Checkbox checked={r.bold} onCheckedChange={(v) => patch({ bold: !!v })} />
+                              Bold
+                            </label>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </ScrollArea>
+              </PopoverContent>
+            </Popover>
+
+
+
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="sm" disabled={!resultCols.length}>
@@ -1366,15 +1596,18 @@ Apply
                   ? renderNodes(groupedTree, 0, visibleCols)
                   : pageRows.map((r, i) => (
                       <tr key={i} className="border-b border-border/50 hover:bg-accent/30">
-                        {visibleCols.map((c) => (
-                          <td
-                            key={c}
-                            style={{ width: colWidths[c] ?? 160 }}
-                            className="px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis"
-                          >
-                            {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
-                          </td>
-                        ))}
+                        {visibleCols.map((c) => {
+                          const fmt = styleForCell(c, r, formatRules);
+                          return (
+                            <td
+                              key={c}
+                              style={{ width: colWidths[c] ?? 160, ...fmt.style }}
+                              className={`px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis ${fmt.bold ? "font-bold" : ""}`}
+                            >
+                              {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
+                            </td>
+                          );
+                        })}
                       </tr>
                     ))}
               </tbody>
