@@ -556,19 +556,21 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
         ? res.columns
         : (res.rows[0] ? Object.keys(res.rows[0]) : []);
       setResultCols(cols);
-      setColOrder(cols);
+      const calcNames = calcCols.map((c) => c.name);
+      setColOrder([...cols, ...calcNames.filter((n) => !cols.includes(n))]);
       setHiddenCols(new Set());
       setColWidths({});
       setResultRows(res.rows);
       setPage(1);
       setCollapsedGroups(new Set());
-      setGroupBy((g) => g.filter((c) => cols.includes(c)));
+      const known = new Set([...cols, ...calcNames]);
+      setGroupBy((g) => g.filter((c) => known.has(c)));
       setAggregates((a) => {
         const next: Record<string, Set<Agg>> = {};
-        for (const k of Object.keys(a)) if (cols.includes(k)) next[k] = a[k];
+        for (const k of Object.keys(a)) if (known.has(k)) next[k] = a[k];
         return next;
       });
-      setFormatRules((rs) => rs.filter((r) => cols.includes(r.column)));
+      setFormatRules((rs) => rs.filter((r) => known.has(r.column)));
       toast.success(`${res.rows.length} row(s) in ${res.durationMs}ms`);
     } catch (e) {
       toast.error(`Query failed: ${(e as Error).message}`);
