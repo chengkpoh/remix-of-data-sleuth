@@ -1331,7 +1331,7 @@ const showAllCols = () => {
                 </div>
                 <ScrollArea className="h-64">
                   <div className="space-y-1.5 pr-2">
-                    {resultCols.map((c) => {
+                    {allCols.map((c) => {
                       const set = aggregates[c] ?? new Set<Agg>();
                       return (
                         <div key={c} className="rounded border border-border/60 bg-background/40 px-2 py-1.5">
