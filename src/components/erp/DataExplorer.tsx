@@ -277,6 +277,7 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
   const [groupBy, setGroupBy] = useState<string[]>([]);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [aggregates, setAggregates] = useState<Record<string, Set<Agg>>>({});
+  const [formatRules, setFormatRules] = useState<FormatRule[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(100);
   const dragColRef = useRef<string | null>(null);
