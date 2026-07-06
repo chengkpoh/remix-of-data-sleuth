@@ -633,10 +633,38 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
     setSavedList(list);
   };
 
+  // ---- Calculated columns integration ----
+  const calcNames = useMemo(() => calcCols.map((c) => c.name), [calcCols]);
+  const allCols = useMemo(
+    () => [...resultCols, ...calcNames.filter((n) => !resultCols.includes(n))],
+    [resultCols, calcNames],
+  );
+  const augmentedRows = useMemo(() => {
+    if (!calcCols.length) return resultRows;
+    return resultRows.map((r) => {
+      const out: Record<string, unknown> = { ...r };
+      for (const c of calcCols) {
+        const v = evalCalc(c.expr, out);
+        out[c.name] = v;
+      }
+      return out;
+    });
+  }, [resultRows, calcCols]);
+
+  // Keep colOrder in sync when calc columns are added/removed.
+  useEffect(() => {
+    if (!resultCols.length) return;
+    setColOrder((prev) => {
+      const keep = prev.filter((c) => resultCols.includes(c) || calcNames.includes(c));
+      const missing = [...resultCols, ...calcNames].filter((c) => !keep.includes(c));
+      return [...keep, ...missing];
+    });
+  }, [calcNames, resultCols]);
+
   // ---- Results: sort + paginate ----
   const sortedRows = useMemo(() => {
-    if (!sortKey) return resultRows;
-    const arr = [...resultRows];
+    if (!sortKey) return augmentedRows;
+    const arr = [...augmentedRows];
     arr.sort((a, b) => {
       const av = a[sortKey] as unknown; const bv = b[sortKey] as unknown;
       if (av == null && bv == null) return 0;
@@ -647,7 +675,7 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
       return sortDir === "asc" ? as.localeCompare(bs) : bs.localeCompare(as);
     });
     return arr;
-  }, [resultRows, sortKey, sortDir]);
+  }, [augmentedRows, sortKey, sortDir]);
 
 const filteredRows = useMemo(() => {
   let rows = sortedRows;
@@ -676,15 +704,15 @@ const totalPages = Math.max(
 );
 
   const exportCSV = () => {
-    if (!resultRows.length) { toast.error("Nothing to export."); return; }
+    if (!augmentedRows.length) { toast.error("Nothing to export."); return; }
     const esc = (v: unknown) => {
       if (v == null) return "";
       const s = String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
     const csv = [
-      resultCols.join(","),
-      ...resultRows.map((r) => resultCols.map((c) => esc(r[c])).join(",")),
+      allCols.join(","),
+      ...augmentedRows.map((r) => allCols.map((c) => esc(r[c])).join(",")),
     ].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -695,10 +723,10 @@ const totalPages = Math.max(
     URL.revokeObjectURL(url);
   };
   const copyResults = async () => {
-    if (!resultRows.length) { toast.error("Nothing to copy."); return; }
+    if (!augmentedRows.length) { toast.error("Nothing to copy."); return; }
     const text = [
-      resultCols.join("\t"),
-      ...resultRows.map((r) => resultCols.map((c) => (r[c] == null ? "" : String(r[c]))).join("\t")),
+      allCols.join("\t"),
+      ...augmentedRows.map((r) => allCols.map((c) => (r[c] == null ? "" : String(r[c]))).join("\t")),
     ].join("\n");
     await navigator.clipboard.writeText(text);
     toast.success("Copied to clipboard");
@@ -708,12 +736,12 @@ const totalPages = Math.max(
   const getColumnValues = (col:string) => {
   return Array.from(
     new Set(
-      resultRows.map(r => String(r[col] ?? ""))
+      augmentedRows.map(r => String(r[col] ?? ""))
     )
   ).sort();
 };
   const hideAllCols = () => {
-  setHiddenCols(new Set(resultCols));
+  setHiddenCols(new Set(allCols));
 };
 
 const showAllCols = () => {
@@ -726,12 +754,12 @@ const showAllCols = () => {
   const filteredResultCols = useMemo(() => {
   const q = columnSearch.trim().toLowerCase();
 
-  if (!q) return resultCols;
+  if (!q) return allCols;
 
-  return resultCols.filter((c) =>
+  return allCols.filter((c) =>
     c.toLowerCase().includes(q)
   );
-}, [resultCols, columnSearch]);
+}, [allCols, columnSearch]);
   const hideCol = (c: string) => setHiddenCols((s) => new Set(s).add(c));
   const showCol = (c: string) => setHiddenCols((s) => {
     const n = new Set(s); n.delete(c); return n;
