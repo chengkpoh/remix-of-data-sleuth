@@ -153,6 +153,105 @@ function buildGroups(rows: Record<string, unknown>[], keys: string[], parentPath
   });
 }
 
+// ---- Conditional Formatting ----
+type FmtOp =
+  | "=" | "!=" | ">" | "<" | ">=" | "<="
+  | "between" | "contains" | "notContains" | "startsWith" | "endsWith"
+  | "isNull" | "isNotNull" | "isTrue" | "isFalse";
+
+const FMT_OPS: { value: FmtOp; label: string; needsValue: boolean; needsValue2?: boolean }[] = [
+  { value: "=", label: "=", needsValue: true },
+  { value: "!=", label: "≠", needsValue: true },
+  { value: ">", label: ">", needsValue: true },
+  { value: "<", label: "<", needsValue: true },
+  { value: ">=", label: "≥", needsValue: true },
+  { value: "<=", label: "≤", needsValue: true },
+  { value: "between", label: "Between", needsValue: true, needsValue2: true },
+  { value: "contains", label: "Contains", needsValue: true },
+  { value: "notContains", label: "Not Contains", needsValue: true },
+  { value: "startsWith", label: "Starts With", needsValue: true },
+  { value: "endsWith", label: "Ends With", needsValue: true },
+  { value: "isNull", label: "Is Null", needsValue: false },
+  { value: "isNotNull", label: "Is Not Null", needsValue: false },
+  { value: "isTrue", label: "Is True", needsValue: false },
+  { value: "isFalse", label: "Is False", needsValue: false },
+];
+
+interface FormatRule {
+  id: string;
+  column: string;
+  op: FmtOp;
+  value: string;
+  value2: string;
+  bg: string;   // css color or ""
+  fg: string;   // css color or ""
+  bold: boolean;
+}
+
+const FMT_PRESETS: { label: string; bg: string; fg: string }[] = [
+  { label: "None",    bg: "",        fg: "" },
+  { label: "Red",     bg: "#fee2e2", fg: "#991b1b" },
+  { label: "Amber",   bg: "#fef3c7", fg: "#92400e" },
+  { label: "Green",   bg: "#dcfce7", fg: "#166534" },
+  { label: "Blue",    bg: "#dbeafe", fg: "#1e40af" },
+  { label: "Purple",  bg: "#ede9fe", fg: "#5b21b6" },
+  { label: "Slate",   bg: "#e2e8f0", fg: "#1e293b" },
+];
+
+function evalRule(rule: FormatRule, raw: unknown): boolean {
+  if (rule.op === "isNull") return raw == null || raw === "";
+  if (rule.op === "isNotNull") return !(raw == null || raw === "");
+  if (rule.op === "isTrue") return raw === true || raw === 1 || String(raw).toLowerCase() === "true";
+  if (rule.op === "isFalse") return raw === false || raw === 0 || String(raw).toLowerCase() === "false";
+  if (raw == null) return false;
+  const s = String(raw);
+  const vs = rule.value ?? "";
+  const asNum = (x: unknown) => {
+    const n = typeof x === "number" ? x : Number(x);
+    return Number.isNaN(n) ? null : n;
+  };
+  const numMode = asNum(raw) !== null && asNum(vs) !== null;
+  switch (rule.op) {
+    case "=":  return numMode ? asNum(raw) === asNum(vs) : s === vs;
+    case "!=": return numMode ? asNum(raw) !== asNum(vs) : s !== vs;
+    case ">":  return numMode ? (asNum(raw)! >  asNum(vs)!) : s >  vs;
+    case "<":  return numMode ? (asNum(raw)! <  asNum(vs)!) : s <  vs;
+    case ">=": return numMode ? (asNum(raw)! >= asNum(vs)!) : s >= vs;
+    case "<=": return numMode ? (asNum(raw)! <= asNum(vs)!) : s <= vs;
+    case "between": {
+      const a = asNum(vs), b = asNum(rule.value2);
+      const n = asNum(raw);
+      if (a != null && b != null && n != null) {
+        const lo = Math.min(a, b), hi = Math.max(a, b);
+        return n >= lo && n <= hi;
+      }
+      return s >= vs && s <= (rule.value2 ?? "");
+    }
+    case "contains":    return s.toLowerCase().includes(vs.toLowerCase());
+    case "notContains": return !s.toLowerCase().includes(vs.toLowerCase());
+    case "startsWith":  return s.toLowerCase().startsWith(vs.toLowerCase());
+    case "endsWith":    return s.toLowerCase().endsWith(vs.toLowerCase());
+  }
+  return false;
+}
+
+function styleForCell(
+  col: string,
+  row: Record<string, unknown>,
+  rules: FormatRule[],
+): { style: React.CSSProperties; bold: boolean } {
+  const style: React.CSSProperties = {};
+  let bold = false;
+  for (const r of rules) {
+    if (r.column !== col) continue;
+    if (!evalRule(r, row[col])) continue;
+    if (r.bg) style.backgroundColor = r.bg;
+    if (r.fg) style.color = r.fg;
+    if (r.bold) bold = true;
+  }
+  return { style, bold };
+}
+
 export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean }) {
   const [tableSearch, setTableSearch] = useState("");
   const [showSystem, setShowSystem] = useState(false);
