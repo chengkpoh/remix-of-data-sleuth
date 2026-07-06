@@ -1298,7 +1298,7 @@ const showAllCols = () => {
                 <Select value="" onValueChange={(v) => setGroupBy((g) => (g.includes(v) ? g : [...g, v]))}>
                   <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="Add column…" /></SelectTrigger>
                   <SelectContent>
-                    {resultCols.filter((c) => !groupBy.includes(c)).map((c) => (
+                    {allCols.filter((c) => !groupBy.includes(c)).map((c) => (
                       <SelectItem key={c} value={c}>{c}</SelectItem>
                     ))}
                   </SelectContent>
