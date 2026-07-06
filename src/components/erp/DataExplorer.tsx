@@ -717,15 +717,18 @@ const showAllCols = () => {
         node.rows.forEach((r, i) => {
           out.push(
             <tr key={`gr-${node.path}-${i}`} className="border-b border-border/50 hover:bg-accent/30">
-              {visible.map((c, idx) => (
-                <td
-                  key={c}
-                  style={{ width: colWidths[c] ?? 160, paddingLeft: idx === 0 ? 12 + (depth + 1) * 14 : undefined }}
-                  className="px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis"
-                >
-                  {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
-                </td>
-              ))}
+              {visible.map((c, idx) => {
+                const fmt = styleForCell(c, r, formatRules);
+                return (
+                  <td
+                    key={c}
+                    style={{ width: colWidths[c] ?? 160, paddingLeft: idx === 0 ? 12 + (depth + 1) * 14 : undefined, ...fmt.style }}
+                    className={`px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis ${fmt.bold ? "font-bold" : ""}`}
+                  >
+                    {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
+                  </td>
+                );
+              })}
             </tr>,
           );
         });
