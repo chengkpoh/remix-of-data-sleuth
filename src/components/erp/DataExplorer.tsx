@@ -459,6 +459,7 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
         for (const k of Object.keys(a)) if (cols.includes(k)) next[k] = a[k];
         return next;
       });
+      setFormatRules((rs) => rs.filter((r) => cols.includes(r.column)));
       toast.success(`${res.rows.length} row(s) in ${res.durationMs}ms`);
     } catch (e) {
       toast.error(`Query failed: ${(e as Error).message}`);
