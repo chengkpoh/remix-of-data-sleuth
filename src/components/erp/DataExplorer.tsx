@@ -252,6 +252,113 @@ function styleForCell(
   return { style, bold };
 }
 
+// ---- Calculated Columns (client-side, arithmetic only) ----
+interface CalcColumn {
+  id: string;
+  name: string;
+  expr: string;
+}
+
+function tokenizeExpr(src: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    if (/\s/.test(ch)) { i++; continue; }
+    if ("+-*/()".includes(ch)) { out.push(ch); i++; continue; }
+    if (/[0-9]/.test(ch) || (ch === "." && /[0-9]/.test(src[i + 1] ?? ""))) {
+      let j = i; while (j < src.length && /[0-9.]/.test(src[j])) j++;
+      out.push(src.slice(i, j)); i = j; continue;
+    }
+    if (ch === "[") {
+      const end = src.indexOf("]", i + 1);
+      if (end < 0) throw new Error("Unclosed [ in expression");
+      out.push("$" + src.slice(i + 1, end).trim());
+      i = end + 1; continue;
+    }
+    if (/[A-Za-z_]/.test(ch)) {
+      let j = i; while (j < src.length && /[A-Za-z0-9_.]/.test(src[j])) j++;
+      out.push("$" + src.slice(i, j)); i = j; continue;
+    }
+    throw new Error(`Unexpected character "${ch}"`);
+  }
+  return out;
+}
+
+function evalCalc(expr: string, row: Record<string, unknown>): number | null {
+  if (!expr.trim()) return null;
+  let tokens: string[];
+  try { tokens = tokenizeExpr(expr); } catch { return null; }
+  if (!tokens.length) return null;
+  let pos = 0;
+  const peek = () => tokens[pos];
+  const eat = () => tokens[pos++];
+
+  const parseAtom = (): number => {
+    const t = eat();
+    if (t === undefined) throw new Error("Unexpected end");
+    if (t === "(") {
+      const v = parseAddSub();
+      if (eat() !== ")") throw new Error("Missing )");
+      return v;
+    }
+    if (t === "-") return -parseAtom();
+    if (t === "+") return  parseAtom();
+    if (t.startsWith("$")) {
+      const name = t.slice(1);
+      const raw = row[name];
+      const n = typeof raw === "number" ? raw : Number(raw);
+      return Number.isFinite(n) ? n : NaN;
+    }
+    const n = Number(t);
+    if (!Number.isFinite(n)) throw new Error(`Bad number: ${t}`);
+    return n;
+  };
+  const parseMulDiv = (): number => {
+    let left = parseAtom();
+    while (peek() === "*" || peek() === "/") {
+      const op = eat();
+      const right = parseAtom();
+      left = op === "*" ? left * right : left / right;
+    }
+    return left;
+  };
+  const parseAddSub = (): number => {
+    let left = parseMulDiv();
+    while (peek() === "+" || peek() === "-") {
+      const op = eat();
+      const right = parseMulDiv();
+      left = op === "+" ? left + right : left - right;
+    }
+    return left;
+  };
+
+  try {
+    const v = parseAddSub();
+    if (pos !== tokens.length) return null;
+    return Number.isFinite(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function validateCalcExpr(expr: string, availableCols: string[]): { ok: boolean; error?: string } {
+  if (!expr.trim()) return { ok: false, error: "Empty expression" };
+  let tokens: string[];
+  try { tokens = tokenizeExpr(expr); } catch (e) { return { ok: false, error: (e as Error).message }; }
+  const missing = tokens
+    .filter((t) => t.startsWith("$"))
+    .map((t) => t.slice(1))
+    .filter((n) => !availableCols.includes(n) && !Number.isFinite(Number(n)));
+  if (missing.length) return { ok: false, error: `Unknown column(s): ${Array.from(new Set(missing)).join(", ")}` };
+  // dry-run
+  const sample: Record<string, unknown> = {};
+  for (const c of availableCols) sample[c] = 1;
+  const v = evalCalc(expr, sample);
+  if (v === null) return { ok: false, error: "Invalid expression" };
+  return { ok: true };
+}
+
 export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean }) {
   const [tableSearch, setTableSearch] = useState("");
   const [showSystem, setShowSystem] = useState(false);
