@@ -1422,7 +1422,7 @@ const showAllCols = () => {
                             <Select value={r.column} onValueChange={(v) => patch({ column: v })}>
                               <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="Column" /></SelectTrigger>
                               <SelectContent>
-                                {resultCols.map((c) => (
+                                {allCols.map((c) => (
                                   <SelectItem key={c} value={c}>{c}</SelectItem>
                                 ))}
                               </SelectContent>
