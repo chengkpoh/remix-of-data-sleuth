@@ -1509,7 +1509,7 @@ const showAllCols = () => {
       className="text-[11px] text-primary hover:underline"
       onClick={() => {
         setHiddenCols(new Set());
-        setColOrder(resultCols);
+        setColOrder(allCols);
         setColumnSearch("");
       }}
     >
