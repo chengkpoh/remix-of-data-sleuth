@@ -160,6 +160,9 @@ export function SchemaManager({ schema, dark }: { schema: SchemaSnapshot; dark: 
   const updateSpec = (k: string, patch: Partial<NewTypeSpec>) =>
     updateRow(k, (r) => ({ ...r, spec: { ...r.spec, ...patch } }));
 
+  const setSearchTerm = (t: TableInfo, value: string) =>
+    setSearchTerms((prev) => ({ ...prev, [tableKey(t)]: value }));
+
   const selectedCount = useMemo(
     () => Object.values(rows).filter((r) => r.selected).length,
     [rows],
