@@ -751,7 +751,7 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
       const out: Record<string, unknown> = { ...r };
       for (const c of calcCols) {
         const v = evalCalc(c.expr, out);
-        out[c.name] = v;
+        out[c.name] = typeof v === "boolean" ? (v ? "TRUE" : "FALSE") : v;
       }
       return out;
     });
