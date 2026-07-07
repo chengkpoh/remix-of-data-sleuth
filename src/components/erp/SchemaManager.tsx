@@ -310,9 +310,11 @@ export function SchemaManager({ schema, dark }: { schema: SchemaSnapshot; dark: 
             const k = tableKey(t);
             const cols = tableColumns[k];
             const isLoading = loadingKeys.has(k);
+            const term = (searchTerms[k] || "").toLowerCase();
+            const filteredCols = cols ? cols.filter((c) => c.columnName.toLowerCase().includes(term)) : [];
             return (
               <Card key={k} className="overflow-hidden">
-                <div className="flex items-center justify-between border-b border-border bg-muted/30 px-3 py-2">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-muted/30 px-3 py-2">
                   <div className="flex items-center gap-2 text-sm font-medium">
                     <Badge variant="outline" className="font-mono text-[10px]">{t.schema}</Badge>
                     <span className="font-mono">{t.name}</span>
