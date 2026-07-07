@@ -1639,7 +1639,7 @@ const showAllCols = () => {
                   </Button>
                 </div>
                 <div className="mb-2 text-[10px] text-muted-foreground">
-                  Client-side formulas. Reference columns by name, or wrap names with spaces in [brackets]. Supports + - * / ( ) and numeric constants.
+                  Client-side formulas. Wrap column names in [brackets] (e.g. [d1.CompanyCode]). Supports arithmetic (+ - * / ( ), numeric constants, 'strings') and comparisons (=, &lt;&gt;, !=, &lt;, &gt;, &lt;=, &gt;=) returning TRUE/FALSE.
                 </div>
                 {calcCols.length === 0 ? (
                   <div className="rounded border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
