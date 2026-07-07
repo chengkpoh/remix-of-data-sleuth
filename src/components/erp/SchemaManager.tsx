@@ -344,8 +344,10 @@ export function SchemaManager({ schema, dark }: { schema: SchemaSnapshot; dark: 
                   <div className="flex items-center justify-center p-6 text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin" />
                   </div>
-                ) : cols.length === 0 ? (
-                  <div className="p-6 text-center text-sm text-muted-foreground">No columns found.</div>
+                ) : filteredCols.length === 0 ? (
+                  <div className="p-6 text-center text-sm text-muted-foreground">
+                    {term ? "No columns match your search." : "No columns found."}
+                  </div>
                 ) : (
                   <div className="overflow-auto">
                     <table className="w-full border-collapse text-sm">
@@ -359,7 +361,7 @@ export function SchemaManager({ schema, dark }: { schema: SchemaSnapshot; dark: 
                         </tr>
                       </thead>
                       <tbody>
-                        {cols.map((c) => {
+                        {filteredCols.map((c) => {
                           const rk = rowKey(t, c.columnName);
                           const row = rows[rk];
                           if (!row) return null;
