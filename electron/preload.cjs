@@ -29,13 +29,7 @@ contextBridge.exposeInMainWorld("erp", {
   getTableColumns: (params) => ipcRenderer.invoke("erp:getTableColumns", params),
   getColumnDependencies: (params) => ipcRenderer.invoke("erp:getColumnDependencies", params),
   executeAlterStatements: (params) => ipcRenderer.invoke("erp:executeAlterStatements", params),
-  runHealthCheck: (params) => ipcRenderer.invoke("erp:runHealthCheck", params || {}),
-  cancelHealthCheck: () => ipcRenderer.invoke("erp:cancelHealthCheck"),
-  onHealthCheckProgress: (cb) => {
-    const listener = (_e, data) => cb(data);
-    ipcRenderer.on("erp:healthCheckProgress", listener);
-    return () => ipcRenderer.removeListener("erp:healthCheckProgress", listener);
-  },
+  
   getForeignKeys: () => ipcRenderer.invoke("erp:getForeignKeys"),
   runDataExplorerQuery: (spec) => ipcRenderer.invoke("erp:runDataExplorerQuery", spec),
 });
