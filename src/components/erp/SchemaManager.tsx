@@ -92,6 +92,7 @@ export function SchemaManager({ schema, dark }: { schema: SchemaSnapshot; dark: 
   const [tableColumns, setTableColumns] = useState<Record<TableKey, TableColumnInfo[]>>({});
   const [loadingKeys, setLoadingKeys] = useState<Set<TableKey>>(new Set());
   const [rows, setRows] = useState<Record<string, RowState>>({});
+  const [searchTerms, setSearchTerms] = useState<Record<TableKey, string>>({});
 
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewStmts, setPreviewStmts] = useState<string[]>([]);
