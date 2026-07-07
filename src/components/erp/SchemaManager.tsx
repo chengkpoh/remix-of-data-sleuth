@@ -318,7 +318,26 @@ export function SchemaManager({ schema, dark }: { schema: SchemaSnapshot; dark: 
                   <div className="flex items-center gap-2 text-sm font-medium">
                     <Badge variant="outline" className="font-mono text-[10px]">{t.schema}</Badge>
                     <span className="font-mono">{t.name}</span>
-                    {cols && <span className="text-xs text-muted-foreground">{cols.length} columns</span>}
+                    {cols && <span className="text-xs text-muted-foreground">{filteredCols.length} of {cols.length} columns</span>}
+                  </div>
+                  <div className="relative">
+                    <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={searchTerms[k] || ""}
+                      onChange={(e) => setSearchTerm(t, e.target.value)}
+                      placeholder="Search column..."
+                      className="h-8 w-[220px] pl-8 pr-7 text-xs"
+                    />
+                    {searchTerms[k] && (
+                      <button
+                        type="button"
+                        onClick={() => setSearchTerm(t, "")}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        aria-label="Clear search"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                 </div>
                 {isLoading || !cols ? (
