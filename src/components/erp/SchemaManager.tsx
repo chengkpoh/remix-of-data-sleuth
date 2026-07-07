@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Loader2, Wand2, ShieldAlert, CheckCircle2, X } from "lucide-react";
+import { Loader2, Wand2, ShieldAlert, CheckCircle2, X, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -92,6 +92,7 @@ export function SchemaManager({ schema, dark }: { schema: SchemaSnapshot; dark: 
   const [tableColumns, setTableColumns] = useState<Record<TableKey, TableColumnInfo[]>>({});
   const [loadingKeys, setLoadingKeys] = useState<Set<TableKey>>(new Set());
   const [rows, setRows] = useState<Record<string, RowState>>({});
+  const [searchTerms, setSearchTerms] = useState<Record<TableKey, string>>({});
 
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewStmts, setPreviewStmts] = useState<string[]>([]);
@@ -158,6 +159,9 @@ export function SchemaManager({ schema, dark }: { schema: SchemaSnapshot; dark: 
   };
   const updateSpec = (k: string, patch: Partial<NewTypeSpec>) =>
     updateRow(k, (r) => ({ ...r, spec: { ...r.spec, ...patch } }));
+
+  const setSearchTerm = (t: TableInfo, value: string) =>
+    setSearchTerms((prev) => ({ ...prev, [tableKey(t)]: value }));
 
   const selectedCount = useMemo(
     () => Object.values(rows).filter((r) => r.selected).length,
@@ -306,21 +310,44 @@ export function SchemaManager({ schema, dark }: { schema: SchemaSnapshot; dark: 
             const k = tableKey(t);
             const cols = tableColumns[k];
             const isLoading = loadingKeys.has(k);
+            const term = (searchTerms[k] || "").toLowerCase();
+            const filteredCols = cols ? cols.filter((c) => c.columnName.toLowerCase().includes(term)) : [];
             return (
               <Card key={k} className="overflow-hidden">
-                <div className="flex items-center justify-between border-b border-border bg-muted/30 px-3 py-2">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-muted/30 px-3 py-2">
                   <div className="flex items-center gap-2 text-sm font-medium">
                     <Badge variant="outline" className="font-mono text-[10px]">{t.schema}</Badge>
                     <span className="font-mono">{t.name}</span>
-                    {cols && <span className="text-xs text-muted-foreground">{cols.length} columns</span>}
+                    {cols && <span className="text-xs text-muted-foreground">{filteredCols.length} of {cols.length} columns</span>}
+                  </div>
+                  <div className="relative">
+                    <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={searchTerms[k] || ""}
+                      onChange={(e) => setSearchTerm(t, e.target.value)}
+                      placeholder="Search column..."
+                      className="h-8 w-[220px] pl-8 pr-7 text-xs"
+                    />
+                    {searchTerms[k] && (
+                      <button
+                        type="button"
+                        onClick={() => setSearchTerm(t, "")}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        aria-label="Clear search"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                 </div>
                 {isLoading || !cols ? (
                   <div className="flex items-center justify-center p-6 text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin" />
                   </div>
-                ) : cols.length === 0 ? (
-                  <div className="p-6 text-center text-sm text-muted-foreground">No columns found.</div>
+                ) : filteredCols.length === 0 ? (
+                  <div className="p-6 text-center text-sm text-muted-foreground">
+                    {term ? "No columns match your search." : "No columns found."}
+                  </div>
                 ) : (
                   <div className="overflow-auto">
                     <table className="w-full border-collapse text-sm">
@@ -334,7 +361,7 @@ export function SchemaManager({ schema, dark }: { schema: SchemaSnapshot; dark: 
                         </tr>
                       </thead>
                       <tbody>
-                        {cols.map((c) => {
+                        {filteredCols.map((c) => {
                           const rk = rowKey(t, c.columnName);
                           const row = rows[rk];
                           if (!row) return null;
