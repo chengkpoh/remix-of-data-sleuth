@@ -262,16 +262,37 @@ interface CalcColumn {
   expr: string;
 }
 
+type CalcValue = number | string | boolean | null;
+
 function tokenizeExpr(src: string): string[] {
   const out: string[] = [];
   let i = 0;
   while (i < src.length) {
     const ch = src[i];
     if (/\s/.test(ch)) { i++; continue; }
+    // Multi-char comparison operators
+    const two = src.slice(i, i + 2);
+    if (two === "<>" || two === "!=" || two === "<=" || two === ">=") {
+      out.push(two); i += 2; continue;
+    }
+    if (ch === "=" || ch === "<" || ch === ">") { out.push(ch); i++; continue; }
     if ("+-*/()".includes(ch)) { out.push(ch); i++; continue; }
     if (/[0-9]/.test(ch) || (ch === "." && /[0-9]/.test(src[i + 1] ?? ""))) {
       let j = i; while (j < src.length && /[0-9.]/.test(src[j])) j++;
       out.push(src.slice(i, j)); i = j; continue;
+    }
+    if (ch === "'" || ch === '"') {
+      const quote = ch;
+      let j = i + 1; let s = "";
+      while (j < src.length) {
+        if (src[j] === quote) {
+          if (src[j + 1] === quote) { s += quote; j += 2; continue; }
+          break;
+        }
+        s += src[j]; j++;
+      }
+      if (j >= src.length) throw new Error(`Unclosed string`);
+      out.push("#" + s); i = j + 1; continue;
     }
     if (ch === "[") {
       const end = src.indexOf("]", i + 1);
@@ -288,7 +309,37 @@ function tokenizeExpr(src: string): string[] {
   return out;
 }
 
-function evalCalc(expr: string, row: Record<string, unknown>): number | null {
+const COMPARE_OPS = new Set(["=", "<>", "!=", "<", ">", "<=", ">="]);
+
+function coerceCompare(a: CalcValue, b: CalcValue): [number | string | null, number | string | null] {
+  if (a === null || b === null || a === undefined || b === undefined) return [null, null];
+  // If both look numeric, compare as numbers
+  const na = typeof a === "number" ? a : Number(a);
+  const nb = typeof b === "number" ? b : Number(b);
+  if (typeof a !== "boolean" && typeof b !== "boolean" &&
+      Number.isFinite(na) && Number.isFinite(nb) &&
+      String(a).trim() !== "" && String(b).trim() !== "") {
+    return [na, nb];
+  }
+  return [String(a), String(b)];
+}
+
+function applyCompare(op: string, a: CalcValue, b: CalcValue): boolean | null {
+  const [x, y] = coerceCompare(a, b);
+  if (x === null || y === null) return null;
+  switch (op) {
+    case "=": return x === y;
+    case "<>":
+    case "!=": return x !== y;
+    case "<": return x < y;
+    case ">": return x > y;
+    case "<=": return x <= y;
+    case ">=": return x >= y;
+  }
+  return null;
+}
+
+function evalCalc(expr: string, row: Record<string, unknown>): CalcValue {
   if (!expr.trim()) return null;
   let tokens: string[];
   try { tokens = tokenizeExpr(expr); } catch { return null; }
@@ -297,49 +348,65 @@ function evalCalc(expr: string, row: Record<string, unknown>): number | null {
   const peek = () => tokens[pos];
   const eat = () => tokens[pos++];
 
-  const parseAtom = (): number => {
+  const parseAtom = (): CalcValue => {
     const t = eat();
     if (t === undefined) throw new Error("Unexpected end");
     if (t === "(") {
-      const v = parseAddSub();
+      const v = parseCompare();
       if (eat() !== ")") throw new Error("Missing )");
       return v;
     }
-    if (t === "-") return -parseAtom();
-    if (t === "+") return  parseAtom();
+    if (t === "-") { const v = parseAtom(); return typeof v === "number" ? -v : (v == null ? null : -Number(v)); }
+    if (t === "+") return parseAtom();
     if (t.startsWith("$")) {
       const name = t.slice(1);
+      if (!(name in row)) return null;
       const raw = row[name];
-      const n = typeof raw === "number" ? raw : Number(raw);
-      return Number.isFinite(n) ? n : NaN;
+      if (raw === null || raw === undefined) return null;
+      if (typeof raw === "number" || typeof raw === "boolean") return raw;
+      return String(raw);
     }
+    if (t.startsWith("#")) return t.slice(1);
     const n = Number(t);
     if (!Number.isFinite(n)) throw new Error(`Bad number: ${t}`);
     return n;
   };
-  const parseMulDiv = (): number => {
+  const parseMulDiv = (): CalcValue => {
     let left = parseAtom();
     while (peek() === "*" || peek() === "/") {
       const op = eat();
       const right = parseAtom();
-      left = op === "*" ? left * right : left / right;
+      const a = Number(left); const b = Number(right);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) { left = null; continue; }
+      left = op === "*" ? a * b : (b === 0 ? null : a / b);
     }
     return left;
   };
-  const parseAddSub = (): number => {
+  const parseAddSub = (): CalcValue => {
     let left = parseMulDiv();
     while (peek() === "+" || peek() === "-") {
       const op = eat();
       const right = parseMulDiv();
-      left = op === "+" ? left + right : left - right;
+      const a = Number(left); const b = Number(right);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) { left = null; continue; }
+      left = op === "+" ? a + b : a - b;
+    }
+    return left;
+  };
+  const parseCompare = (): CalcValue => {
+    const left = parseAddSub();
+    if (peek() && COMPARE_OPS.has(peek())) {
+      const op = eat();
+      const right = parseAddSub();
+      return applyCompare(op, left, right);
     }
     return left;
   };
 
   try {
-    const v = parseAddSub();
+    const v = parseCompare();
     if (pos !== tokens.length) return null;
-    return Number.isFinite(v) ? v : null;
+    return v;
   } catch {
     return null;
   }
@@ -352,13 +419,17 @@ function validateCalcExpr(expr: string, availableCols: string[]): { ok: boolean;
   const missing = tokens
     .filter((t) => t.startsWith("$"))
     .map((t) => t.slice(1))
-    .filter((n) => !availableCols.includes(n) && !Number.isFinite(Number(n)));
+    .filter((n) => !availableCols.includes(n));
   if (missing.length) return { ok: false, error: `Unknown column(s): ${Array.from(new Set(missing)).join(", ")}` };
   // dry-run
   const sample: Record<string, unknown> = {};
   for (const c of availableCols) sample[c] = 1;
-  const v = evalCalc(expr, sample);
-  if (v === null) return { ok: false, error: "Invalid expression" };
+  try {
+    const _ = evalCalc(expr, sample);
+    void _;
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
   return { ok: true };
 }
 
@@ -680,7 +751,7 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
       const out: Record<string, unknown> = { ...r };
       for (const c of calcCols) {
         const v = evalCalc(c.expr, out);
-        out[c.name] = v;
+        out[c.name] = typeof v === "boolean" ? (v ? "TRUE" : "FALSE") : v;
       }
       return out;
     });
@@ -1568,7 +1639,7 @@ const showAllCols = () => {
                   </Button>
                 </div>
                 <div className="mb-2 text-[10px] text-muted-foreground">
-                  Client-side formulas. Reference columns by name, or wrap names with spaces in [brackets]. Supports + - * / ( ) and numeric constants.
+                  Client-side formulas. Wrap column names in [brackets] (e.g. [d1.CompanyCode]). Supports arithmetic (+ - * / ( ), numeric constants, 'strings') and comparisons (=, &lt;&gt;, !=, &lt;, &gt;, &lt;=, &gt;=) returning TRUE/FALSE.
                 </div>
                 {calcCols.length === 0 ? (
                   <div className="rounded border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
