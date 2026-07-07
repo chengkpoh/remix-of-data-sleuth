@@ -167,45 +167,44 @@ export function ConnectionHistoryDialog({ open, onOpenChange, currentCfg, onSele
             />
           )}
 
-          <table className="w-full text-xs">
-            <thead className="sticky top-0 bg-card text-left text-muted-foreground">
-              <tr className="border-b border-border">
-                <th className="px-3 py-2 font-medium">DB Code</th>
-                <th className="px-3 py-2 font-medium">Server</th>
-                <th className="px-3 py-2 font-medium">Database</th>
-                <th className="px-3 py-2 font-medium">User</th>
-                <th className="px-3 py-2 font-medium">Updated</th>
-                <th className="w-[200px] px-3 py-2"></th>
-              </tr>
-            </thead>
+          <table className="w-full text-xs table-fixed">
+<thead className="sticky top-0 bg-card text-left text-muted-foreground">
+  <tr className="border-b border-border">
+    <th className="w-[120px] px-3 py-2 font-medium">DB Code</th>
+    <th className="w-[1fr] px-3 py-2 font-medium">Server</th>
+    <th className="w-[140px] px-3 py-2 font-medium">Database</th>
+    <th className="w-[120px] px-3 py-2 font-medium">User</th>
+    <th className="w-[150px] px-3 py-2 font-medium">Updated</th>
+    <th className="w-[120px] px-3 py-2"></th>
+  </tr>
+</thead>
             <tbody>
-              {filtered.map((r) => (
-                <tr key={r.dbCode} className="border-b border-border/50 hover:bg-muted/30">
-                  <td className="px-3 py-1.5 font-mono">
-                    <Badge variant="outline">{r.dbCode}</Badge>
-                  </td>
-                  <td className="px-3 py-1.5 font-mono">{r.cfg.server}</td>
-                  <td className="px-3 py-1.5 font-mono">{r.cfg.database}</td>
-                  <td className="px-3 py-1.5 font-mono">{r.cfg.user}</td>
-                  <td className="px-3 py-1.5 text-muted-foreground">
-                    {new Date(r.updatedAt).toLocaleString()}
-                  </td>
-                  <td className="px-3 py-1.5">
-                    <div className="flex justify-end gap-1">
-                      <Button size="sm" variant="ghost" onClick={() => useRecord(r)} title="Use">
-                        <Check className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={() => beginEdit(r)} title="Edit">
-                        <Pencil className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button size="sm" variant="ghost"
-                        onClick={() => removeRecord(r.dbCode)} title="Delete">
-                        <Trash2 className="h-3.5 w-3.5 text-destructive" />
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+{filtered.map((r) => (
+  <tr key={r.dbCode} className="border-b border-border/50 hover:bg-muted/30">
+    <td className="px-3 py-1.5">
+      <Badge variant="outline" className="block truncate" title={r.dbCode}>{r.dbCode}</Badge>
+    </td>
+    <td className="px-3 py-1.5"><span className="block truncate font-mono" title={r.cfg.server}>{r.cfg.server}</span></td>
+    <td className="px-3 py-1.5"><span className="block truncate font-mono" title={r.cfg.database}>{r.cfg.database}</span></td>
+    <td className="px-3 py-1.5"><span className="block truncate font-mono" title={r.cfg.user}>{r.cfg.user}</span></td>
+    <td className="px-3 py-1.5 text-muted-foreground whitespace-nowrap">
+      {new Date(r.updatedAt).toLocaleString()}
+    </td>
+    <td className="px-3 py-1.5">
+      <div className="flex justify-end gap-1">
+        <Button size="sm" variant="ghost" onClick={() => useRecord(r)} title="Use" className="shrink-0">
+          <Check className="h-3.5 w-3.5" />
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => beginEdit(r)} title="Edit" className="shrink-0">
+          <Pencil className="h-3.5 w-3.5" />
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => removeRecord(r.dbCode)} title="Delete" className="shrink-0">
+          <Trash2 className="h-3.5 w-3.5 text-destructive" />
+        </Button>
+      </div>
+    </td>
+  </tr>
+))}
             </tbody>
           </table>
         </ScrollArea>

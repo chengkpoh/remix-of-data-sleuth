@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  Play, Save, FolderOpen, Trash2, Download, Copy, Plus, X, Table as TableIcon, Loader2, Link2, Columns, Eye, EyeOff, GripVertical, Layers, Sigma, ChevronRight, ChevronDown, Palette, Calculator, Pencil,
+  Play, Save, FolderOpen, Trash2, Download, Copy, Plus, X, Table as TableIcon, Loader2, Link2, Columns, Eye, EyeOff, GripVertical,FileCode2, Layers, Sigma, ChevronRight, ChevronDown, Palette, Calculator, Pencil,
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
@@ -17,9 +17,12 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { getErp } from "@/lib/erp/client";
+import ResultExportMenu from "./ResultExportMenu";
+import ImportScriptPanel from "./ImportScriptPanel";
 import type {
   SchemaSnapshot, TableInfo, ColumnInfo, ForeignKeyInfo,
   DataExplorerSpec, DataExplorerCondition, DataExplorerJoin,
+  DataExplorerSelectColumn, DataExplorerGroupBy, DataExplorerOrderBy, DataExplorerWindowFunction,
 } from "@/lib/erp/types";
 
 type ColCat = "text" | "number" | "bool" | "date" | "other";
@@ -393,7 +396,15 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
   const resizeRef = useRef<{ col: string; startX: number; startW: number } | null>(null);
 
   const [loadOpen, setLoadOpen] = useState(false);
-  const [savedList, setSavedList] = useState<SavedQuery[]>([]);
+    const [savedList, setSavedList] = useState<SavedQuery[]>([]);
+  // --- Import Script flow (additive state) ---
+  const [showImport, setShowImport] = useState(false);
+  const [extSelect, setExtSelect] = useState<DataExplorerSelectColumn[] | undefined>(undefined);
+  const [extGroupBy, setExtGroupBy] = useState<DataExplorerGroupBy[] | undefined>(undefined);
+  const [extOrderBy, setExtOrderBy] = useState<DataExplorerOrderBy[] | undefined>(undefined);
+  const [extWindows, setExtWindows] = useState<DataExplorerWindowFunction[] | undefined>(undefined);
+  const [extDistinct, setExtDistinct] = useState<boolean | undefined>(undefined);
+  const [extRawSql, setExtRawSql] = useState<string | undefined>(undefined);
 
   // Load FKs once when component mounts (best-effort)
   useEffect(() => {
@@ -540,18 +551,42 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
     joins,
     conditions: conditions.map(({ id: _id, ...rest }) => rest),
     limit,
+    selectColumns: extSelect,
+    groupBy: extGroupBy,
+    orderBy: extOrderBy,
+    windowFunctions: extWindows,
+    distinct: extDistinct,
+    rawSql: extRawSql,        
   });
 
-  const runQuery = async () => {
+  // Import Script → populate the existing builder + extended state.
+   const applyImportedSpec = (spec: DataExplorerSpec) => {
+    setSelected(spec.tables.map((t) => ({ ...t, alias: t.alias, instanceId: t.alias })));
+    setJoins(spec.joins);
+    setConditions(spec.conditions.map((c) => ({ ...c, id: Math.random().toString(36).slice(2, 9) })));
+    setLimit(spec.limit);
+    setExtSelect(spec.selectColumns);
+    setExtGroupBy(spec.groupBy);
+    setExtOrderBy(spec.orderBy);
+    setExtWindows(spec.windowFunctions);
+    setExtDistinct(spec.distinct);
+    setExtRawSql((spec as any).rawSql);
+  };
+
+  const runQuery = async (overrideSpec?: DataExplorerSpec) => {
     const erp = getErp();
     if (!erp?.runDataExplorerQuery) {
       toast.error("Data Explorer requires the Electron desktop build.");
       return;
     }
-    if (!selected.length) { toast.error("Select at least one table."); return; }
+    const spec = overrideSpec ?? { ...buildSpec(), rawSql: undefined };
+    if (!spec.rawSql && (!spec.tables || spec.tables.length === 0)) {
+      toast.error("Select at least one table.");
+      return;
+    }
     setRunning(true);
     try {
-      const res = await erp.runDataExplorerQuery(buildSpec());
+      const res = await erp.runDataExplorerQuery(spec);
       const cols = res.columns.length
         ? res.columns
         : (res.rows[0] ? Object.keys(res.rows[0]) : []);
@@ -591,7 +626,7 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
   const saveQuery = () => {
     const name = queryName.trim();
     if (!name) { toast.error("Enter a query name first."); return; }
-    if (!selected.length) { toast.error("Select at least one table."); return; }
+    if (!extRawSql && !selected.length) { toast.error("Select at least one table."); return; }
     const list = loadSaved().filter((q) => q.name !== name);
     list.push({ name, spec: buildSpec(), savedAt: Date.now() });
     localStorage.setItem(SAVED_KEY, JSON.stringify(list));
@@ -981,6 +1016,24 @@ const showAllCols = () => {
       <main className="flex flex-col min-w-0">
         {/* Header: Query Builder toolbar */}
         <div className="border-b border-border bg-card/30 px-4 py-3">
+        {showImport && (
+<ImportScriptPanel
+  onApplySpec={applyImportedSpec}
+  onRunQuery={runQuery}
+  onClearResults={() => {
+    setExtRawSql(undefined);
+    setResultCols([]);
+    setResultRows([]);
+    setColOrder([]);
+    setGroupBy([]);
+    setAggregates({});
+    setFormatRules([]);
+    setCalcCols([]);
+    toast.info("Script cleared — back to Query Builder mode.");
+  }}
+  running={running}
+/>
+)}
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <h2 className="mr-3 text-sm font-semibold">Query Builder</h2>
             <div className="flex flex-1 items-center gap-2 min-w-[260px]">
@@ -993,7 +1046,10 @@ const showAllCols = () => {
               />
             </div>
             <div className="flex items-center gap-1.5">
-              <Button onClick={runQuery} disabled={running} size="sm">
+              <Button variant="outline" size="sm" onClick={() => setShowImport((v) => !v)}>
+                <FileCode2 className="h-4 w-4 mr-1.5" /> Import Script
+              </Button>
+              <Button onClick={() => runQuery()} disabled={running} size="sm">
                 {running ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Play className="mr-1.5 h-3.5 w-3.5" />}
                 Run Query
               </Button>
@@ -1246,9 +1302,12 @@ const showAllCols = () => {
         <div className="flex items-center justify-between border-b border-border bg-background px-4 py-2 text-xs">
           <div className="flex items-center gap-3">
             <span className="font-semibold">Results</span>
-            <Button variant="ghost" size="sm" onClick={exportCSV} disabled={!resultRows.length}>
-              <Download className="mr-1.5 h-3.5 w-3.5" /> Export
-            </Button>
+            <ResultExportMenu
+  rows={augmentedRows}
+  cols={allCols}
+  baseName={`data-explorer-${Date.now()}`}
+  disabled={!resultRows.length}
+/>
             <Button variant="ghost" size="sm" onClick={copyResults} disabled={!resultRows.length}>
               <Copy className="mr-1.5 h-3.5 w-3.5" /> Copy
             </Button>

@@ -132,6 +132,22 @@ export interface DataExplorerCondition {
   value2?: string | number | boolean | null;
   groupOpen?: boolean;
   groupClose?: boolean;
+  /** Additive: raw SQL predicate for conditions the builder can't model. */
+  raw?: string;
+}
+
+export interface DataExplorerSelectColumn {
+  expression: string;
+  alias?: string;
+}
+export interface DataExplorerGroupBy { expression: string; }
+export interface DataExplorerOrderBy { expression: string; direction: "ASC" | "DESC"; }
+export interface DataExplorerWindowFunction {
+  name: string;
+  expression?: string;
+  partitionBy: string[];
+  orderBy: string;
+  alias: string;
 }
 
 export interface DataExplorerSpec {
@@ -139,6 +155,13 @@ export interface DataExplorerSpec {
   joins: DataExplorerJoin[];
   conditions: DataExplorerCondition[];
   limit: number;
+  /** Additive (Import Script flow) — all optional, omitted = original behaviour. */
+  selectColumns?: DataExplorerSelectColumn[];
+  groupBy?: DataExplorerGroupBy[];
+  orderBy?: DataExplorerOrderBy[];
+  windowFunctions?: DataExplorerWindowFunction[];
+  distinct?: boolean;
+  rawSql?: string; 
 }
 
 export interface DataExplorerResult {

@@ -659,6 +659,20 @@ function registerIpc(mainWindow) {
     console.log("🔥 runDataExplorerQuery received");
 console.log(JSON.stringify(spec, null, 2));
     if (!pool) throw new Error("Not connected");
+        // ✅ NEW: If the spec carries raw SQL (Import Script with CTEs), execute it directly.
+    if (spec.rawSql) {
+      const startedAt = Date.now();
+      const res = await pool.request().query(spec.rawSql);
+      return {
+        columns: (res.recordset && res.recordset.columns)
+          ? Object.keys(res.recordset.columns)
+          : (res.recordset[0] ? Object.keys(res.recordset[0]) : []),
+        rows: res.recordset || [],
+        sql: spec.rawSql,
+        durationMs: Date.now() - startedAt,
+      };
+    }
+    
     if (!schemaCache) await loadSchema();
 
     const tables = Array.isArray(spec?.tables) ? spec.tables : [];
@@ -758,16 +772,18 @@ console.log(JSON.stringify(spec, null, 2));
       "contains", "notContains", "startsWith", "endsWith", "equals", "notEquals",
       "=", "!=", ">", "<", ">=", "<=", "between",
       "isTrue", "isFalse", "before", "after", "onDate", "isNull", "isNotNull",
+      "raw",
     ]);
 
     const whereParts = [];
     conditions.forEach((c, i) => {
-      const type = colExists(c.alias, c.column);
-      if (!type) throw new Error(`Unknown column ${c.alias}.${c.column}`);
+      const type = c.operator === "raw" ? "raw" : colExists(c.alias, c.column);
+      if (c.operator !== "raw" && !type) throw new Error(`Unknown column ${c.alias}.${c.column}`);
       if (!allowedOps.has(c.operator)) throw new Error(`Bad operator ${c.operator}`);
       const colRef = `${quoteIdent(c.alias)}.${quoteIdent(c.column)}`;
       let expr;
-      switch (c.operator) {
+      if (c.operator === "raw") { expr = String(c.raw || ""); }
+      else switch (c.operator) {
         case "contains":     expr = `${colRef} LIKE ${addParam(`%${c.value ?? ""}%`)}`; break;
         case "notContains":  expr = `${colRef} NOT LIKE ${addParam(`%${c.value ?? ""}%`)}`; break;
         case "startsWith":   expr = `${colRef} LIKE ${addParam(`${c.value ?? ""}%`)}`; break;
@@ -797,22 +813,49 @@ console.log(JSON.stringify(spec, null, 2));
     });
 
     const limit = Math.max(1, Math.min(10000, Number(spec.limit) || 100));
+    const hasExplicitSelect = Array.isArray(spec.selectColumns) && spec.selectColumns.length > 0;
     const selectParts = [];
 
-for (const t of orderedTables) {
-  const cols = schemaCache.columns.filter(
-    (c) => c.schema === t.schema && c.table === t.name
-  );
+    if (hasExplicitSelect) {
+      // Import Script flow — explicit projection.
+      for (const c of spec.selectColumns) {
+        const expr = String(c.expression);
+        selectParts.push(c.alias ? `${expr} AS ${quoteIdent(c.alias)}` : expr);
+      }
+      if (Array.isArray(spec.windowFunctions)) {
+        for (const wf of spec.windowFunctions) {
+          const args = wf.expression ? `(${wf.expression})` : "()";
+          const part = wf.partitionBy && wf.partitionBy.length
+            ? `PARTITION BY ${wf.partitionBy.join(", ")}`
+            : "";
+          const ord = wf.orderBy ? ` ORDER BY ${wf.orderBy}` : "";
+          selectParts.push(`${wf.name}${args} OVER (${part}${ord}) AS ${quoteIdent(wf.alias)}`);
+        }
+      }
+    } else {
+      // Original behaviour — auto-project every column of every table.
+      for (const t of orderedTables) {
+        const cols = schemaCache.columns.filter(
+          (c) => c.schema === t.schema && c.table === t.name,
+        );
+        for (const c of cols) {
+          selectParts.push(
+            `${quoteIdent(t.alias)}.${quoteIdent(c.column)} AS ${quoteIdent(`${t.alias}.${c.column}`)}`,
+          );
+        }
+      }
+    }
 
-  for (const c of cols) {
-    selectParts.push(
-      `${quoteIdent(t.alias)}.${quoteIdent(c.column)} AS ${quoteIdent(`${t.alias}.${c.column}`)}`
-    );
-  }
-}
-    const sqlText =
-      `SELECT TOP (${limit}) ${selectParts.join(", ")} FROM ${fromParts.join(" ")}` +
+    let sqlText =
+      `SELECT ${spec.distinct ? "DISTINCT " : ""}TOP (${limit}) ${selectParts.join(", ")} ` +
+      `FROM ${fromParts.join(" ")}` +
       (whereParts.length ? ` WHERE ${whereParts.join("")}` : "");
+    if (hasExplicitSelect && Array.isArray(spec.groupBy) && spec.groupBy.length) {
+      sqlText += ` GROUP BY ${spec.groupBy.map((g) => g.expression).join(", ")}`;
+    }
+    if (Array.isArray(spec.orderBy) && spec.orderBy.length) {
+      sqlText += ` ORDER BY ${spec.orderBy.map((o) => `${o.expression} ${o.direction}`).join(", ")}`;
+    }
     console.log("🔥 GENERATED SQL:");
 console.log(sqlText);
     const startedAt = Date.now();
