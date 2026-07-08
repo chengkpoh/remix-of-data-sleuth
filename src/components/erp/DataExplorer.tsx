@@ -1135,26 +1135,30 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
                         <button className="flex-1 text-left" onClick={() => { if (sortKey === c) setSortDir(d=>d==="asc"?"desc":"asc"); else { setSortKey(c); setSortDir("asc"); } }}>{c}</button>
                         <Popover open={filterOpen===c} onOpenChange={(v)=>setFilterOpen(v?c:null)}>
                           <PopoverTrigger asChild><button className="text-muted-foreground hover:text-primary">▼</button></PopoverTrigger>
-                          <PopoverContent className="w-48 p-2">
+                          <PopoverContent className="w-56 p-2">
                             <div className="max-h-60 overflow-auto">
-                              {(columnValuesCache[c] ?? []).map(v => {
+                              {filterOpen === c && openFilterValues.values.map((v) => {
                                 const checked = columnFilters[c]?.has(v) ?? true;
                                 return (
                                   <label key={v} className="flex gap-2 text-xs">
                                     <Checkbox checked={checked} onCheckedChange={(x) => {
-                                      setColumnFilters(prev => {
-                                        const next = new Set(prev[c] ?? (columnValuesCache[c] ?? []));
+                                      setColumnFilters((prev) => {
+                                        const next = new Set(prev[c] ?? openFilterValues.values);
                                         if (x) next.add(v); else next.delete(v);
                                         return { ...prev, [c]: next };
                                       });
                                     }} />
-                                    <span>{v}</span>
+                                    <span className="truncate">{v || <em className="text-muted-foreground">(empty)</em>}</span>
                                   </label>
                                 );
                               })}
+                              {filterOpen === c && openFilterValues.capped && (
+                                <div className="mt-1 text-[10px] text-muted-foreground">Showing first {DISTINCT_CAP} distinct values.</div>
+                              )}
                             </div>
                             <Button size="sm" className="mt-2 w-full" onClick={() => setFilterOpen(null)}>Apply</Button>
                           </PopoverContent>
+
                         </Popover>
                       </div>
                       <span onMouseDown={startResize(c)} className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/40" />
