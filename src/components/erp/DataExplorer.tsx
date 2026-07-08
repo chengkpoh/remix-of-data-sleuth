@@ -1146,12 +1146,9 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
             </Popover>
           </div>
           <div className="flex items-center gap-2 text-muted-foreground">
-            <span>Show</span>
-            <Select value={String(pageSize)} onValueChange={(v) => { setPageSize(Number(v)); setPage(1); }}>
-              <SelectTrigger className="h-7 w-[80px] text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>{[25, 50, 100, 250, 500].map((n) => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}</SelectContent>
-            </Select>
-            <span>rows</span>
+            {resultRows.length > 0 && (
+              <span className="text-[11px]">{filteredRows.length.toLocaleString()} row(s)</span>
+            )}
           </div>
         </div>
 
