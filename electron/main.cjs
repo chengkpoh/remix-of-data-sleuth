@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain } = require("electron");
 const path = require("path");
 const { runSearch } = require("./searchEngine.cjs");
+const { initStreamHandler } = require("./electronDataExplorerStreamHandler.cjs");
 
 // Lazy require so the file can be inspected on machines without mssql installed.
 let sql = null;
@@ -88,6 +89,14 @@ async function getPrimaryKey(schema, table) {
 }
 
 function registerIpc(mainWindow) {
+  // ✅ 初始化 Data Explorer 流式查询处理器
+  initStreamHandler(
+    ipcMain,
+    () => pool,
+    () => schemaCache,
+    loadSchema
+  );
+
   ipcMain.handle("erp:test", async (_e, cfg) => {
     const mssql = getSql();
     const testPool = new mssql.ConnectionPool({
@@ -279,8 +288,7 @@ function registerIpc(mainWindow) {
     const usedMB  = Number(row.UsedMB)  || 0;
     const freeMB  = Math.max(0, totalMB - usedMB);
     return { totalMB, usedMB, freeMB };
-   }); 
-
+   });
 
   // ---------------- Maintenance: shrink ----------------
   ipcMain.handle("erp:shrinkDatabase", async () => {
@@ -390,7 +398,6 @@ function registerIpc(mainWindow) {
         });
       }
     }
-
 
     currentMaintAbort = null;
     return { total, processed, aborted, durationMs: Date.now() - startedAt };
@@ -531,8 +538,6 @@ function registerIpc(mainWindow) {
     }
   });
 
-
-
   // ---------------- Data Explorer ----------------
   ipcMain.handle("erp:getForeignKeys", async () => {
     if (!pool) throw new Error("Not connected");
@@ -552,10 +557,9 @@ function registerIpc(mainWindow) {
   });
 
   ipcMain.handle("erp:runDataExplorerQuery", async (_e, spec) => {
-    console.log("🔥 runDataExplorerQuery received");
-console.log(JSON.stringify(spec, null, 2));
     if (!pool) throw new Error("Not connected");
-        // ✅ NEW: If the spec carries raw SQL (Import Script with CTEs), execute it directly.
+
+    // ✅ If the spec carries raw SQL (Import Script with CTEs), execute it directly.
     if (spec.rawSql) {
       const startedAt = Date.now();
       const res = await pool.request().query(spec.rawSql);
@@ -568,7 +572,7 @@ console.log(JSON.stringify(spec, null, 2));
         durationMs: Date.now() - startedAt,
       };
     }
-    
+
     if (!schemaCache) await loadSchema();
 
     const tables = Array.isArray(spec?.tables) ? spec.tables : [];
@@ -708,7 +712,8 @@ console.log(JSON.stringify(spec, null, 2));
       whereParts.push(`${conj}${openP}${expr}${closeP}`);
     });
 
-    const limit = Math.max(1, Math.min(10000, Number(spec.limit) || 100));
+    // ✅ limit 改为可选：不传则不加 TOP（全量加载，由前端流式处理）
+    const limit = spec.limit != null ? Math.max(1, Math.min(100000, Number(spec.limit))) : null;
     const hasExplicitSelect = Array.isArray(spec.selectColumns) && spec.selectColumns.length > 0;
     const selectParts = [];
 
@@ -743,7 +748,9 @@ console.log(JSON.stringify(spec, null, 2));
     }
 
     let sqlText =
-      `SELECT ${spec.distinct ? "DISTINCT " : ""}TOP (${limit}) ${selectParts.join(", ")} ` +
+      `SELECT ${spec.distinct ? "DISTINCT " : ""}` +
+      (limit != null ? `TOP (${limit}) ` : "") +
+      `${selectParts.join(", ")} ` +
       `FROM ${fromParts.join(" ")}` +
       (whereParts.length ? ` WHERE ${whereParts.join("")}` : "");
     if (hasExplicitSelect && Array.isArray(spec.groupBy) && spec.groupBy.length) {
@@ -752,8 +759,7 @@ console.log(JSON.stringify(spec, null, 2));
     if (Array.isArray(spec.orderBy) && spec.orderBy.length) {
       sqlText += ` ORDER BY ${spec.orderBy.map((o) => `${o.expression} ${o.direction}`).join(", ")}`;
     }
-    console.log("🔥 GENERATED SQL:");
-console.log(sqlText);
+
     const startedAt = Date.now();
     const res = await req.query(sqlText);
     return {

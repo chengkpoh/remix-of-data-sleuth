@@ -151,7 +151,7 @@ export interface DataExplorerSpec {
   tables: DataExplorerTable[];
   joins: DataExplorerJoin[];
   conditions: DataExplorerCondition[];
-  limit: number;
+  limit?: number;
   /** Additive (Import Script flow) — all optional, omitted = original behaviour. */
   selectColumns?: DataExplorerSelectColumn[];
   groupBy?: DataExplorerGroupBy[];

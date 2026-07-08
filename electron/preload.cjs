@@ -29,7 +29,32 @@ contextBridge.exposeInMainWorld("erp", {
   getTableColumns: (params) => ipcRenderer.invoke("erp:getTableColumns", params),
   getColumnDependencies: (params) => ipcRenderer.invoke("erp:getColumnDependencies", params),
   executeAlterStatements: (params) => ipcRenderer.invoke("erp:executeAlterStatements", params),
-  
+
   getForeignKeys: () => ipcRenderer.invoke("erp:getForeignKeys"),
   runDataExplorerQuery: (spec) => ipcRenderer.invoke("erp:runDataExplorerQuery", spec),
+
+  // ✅ Data Explorer 流式查询 — 大数据集不卡 UI
+  streamDataExplorerQuery: (reqId, spec) =>
+    ipcRenderer.send("erp:dataExplorer:stream", { reqId, spec }),
+
+  onDataExplorerStart: (cb) => {
+    const listener = (_e, data) => cb(data);
+    ipcRenderer.on("erp:dataExplorer:start", listener);
+    return () => ipcRenderer.removeListener("erp:dataExplorer:start", listener);
+  },
+  onDataExplorerBatch: (cb) => {
+    const listener = (_e, data) => cb(data);
+    ipcRenderer.on("erp:dataExplorer:batch", listener);
+    return () => ipcRenderer.removeListener("erp:dataExplorer:batch", listener);
+  },
+  onDataExplorerDone: (cb) => {
+    const listener = (_e, data) => cb(data);
+    ipcRenderer.on("erp:dataExplorer:done", listener);
+    return () => ipcRenderer.removeListener("erp:dataExplorer:done", listener);
+  },
+  onDataExplorerError: (cb) => {
+    const listener = (_e, data) => cb(data);
+    ipcRenderer.on("erp:dataExplorer:error", listener);
+    return () => ipcRenderer.removeListener("erp:dataExplorer:error", listener);
+  },
 });

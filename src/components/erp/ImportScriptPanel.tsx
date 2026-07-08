@@ -148,7 +148,7 @@ export default function ImportScriptPanel({ onApplySpec, onRunQuery, onClearResu
       return;
     }
     const s: ExtendedDataExplorerSpec = {
-      tables: [], joins: [], conditions: [], limit: 100, rawSql: rawSql.trim(),
+      tables: [], joins: [], conditions: [], rawSql: rawSql.trim(),
     };
     setParsed(null);
     commit(s);
@@ -163,7 +163,7 @@ export default function ImportScriptPanel({ onApplySpec, onRunQuery, onClearResu
     }
     try {
       const p = parseSqlScript(rawSql);
-      const s = buildSpecFromParsed(p, 100);
+      const s = buildSpecFromParsed(p);
       setParsed(p);
       commit(s);
       if (p.warnings.length) toast.warning(`Parsed with ${p.warnings.length} note(s).`);

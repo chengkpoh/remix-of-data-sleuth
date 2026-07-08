@@ -68,7 +68,7 @@ export interface ExtendedDataExplorerSpec {
   tables: SpecTable[];
   joins: SpecJoin[];
   conditions: SpecCondition[];
-  limit: number;
+  limit?: number;
   selectColumns?: DataExplorerSelectColumn[];
   groupBy?: DataExplorerGroupBy[];
   orderBy?: DataExplorerOrderBy[];

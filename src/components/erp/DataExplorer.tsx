@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useDeferredValue } from "react";
 import {
-  Play, Save, FolderOpen, Trash2, Download, Copy, Plus, X, Table as TableIcon, Loader2, Link2, Columns, Eye, EyeOff, GripVertical,FileCode2, Layers, Sigma, ChevronRight, ChevronDown, Palette, Calculator, Pencil,
+  Play, Save, FolderOpen, Trash2, Copy, Plus, X, Table as TableIcon, Loader2, Link2,
+  Columns, Eye, EyeOff, GripVertical, FileCode2, Layers, Sigma, ChevronRight, ChevronDown,
+  Palette, Calculator, Pencil,
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
@@ -19,419 +21,22 @@ import { toast } from "sonner";
 import { getErp } from "@/lib/erp/client";
 import ResultExportMenu from "./ResultExportMenu";
 import ImportScriptPanel from "./ImportScriptPanel";
+import {
+  ColCat, categoryOf, OPS, newId, aliasFor, cleanAlias,
+  Agg, AGG_LABEL, ALL_AGGS, calcAgg, fmtAgg,
+  GroupNode, buildGroups,
+  FmtOp, FMT_OPS, FormatRule, FMT_PRESETS, evalRule, styleForCell,
+  CalcColumn, evalCalc, validateCalcExpr,
+  SAVED_KEY, SavedQuery,
+} from "../../lib/dataExplorerHelpers";
 import type {
-  SchemaSnapshot, TableInfo, ColumnInfo, ForeignKeyInfo,
+  SchemaSnapshot, TableInfo, ForeignKeyInfo,
   DataExplorerSpec, DataExplorerCondition, DataExplorerJoin,
   DataExplorerSelectColumn, DataExplorerGroupBy, DataExplorerOrderBy, DataExplorerWindowFunction,
 } from "@/lib/erp/types";
 
-type ColCat = "text" | "number" | "bool" | "date" | "other";
-
-const TEXT = new Set(["varchar", "nvarchar", "char", "nchar", "text", "ntext"]);
-const NUM  = new Set(["int", "bigint", "smallint", "tinyint", "decimal", "numeric", "money", "smallmoney", "float", "real"]);
-const BOOL = new Set(["bit"]);
-const DATE = new Set(["date", "datetime", "datetime2", "smalldatetime", "datetimeoffset", "time"]);
-
-function categoryOf(type: string): ColCat {
-  const t = (type || "").toLowerCase();
-  if (TEXT.has(t)) return "text";
-  if (NUM.has(t)) return "number";
-  if (BOOL.has(t)) return "bool";
-  if (DATE.has(t)) return "date";
-  return "other";
-}
-
-const OPS: Record<ColCat, { value: string; label: string }[]> = {
-  text: [
-    { value: "contains", label: "Contains" },
-    { value: "notContains", label: "Not Contains" },
-    { value: "startsWith", label: "Starts With" },
-    { value: "endsWith", label: "Ends With" },
-    { value: "equals", label: "Equals" },
-    { value: "notEquals", label: "Not Equals" },
-    { value: "isNull", label: "Is Null" },
-    { value: "isNotNull", label: "Is Not Null" },
-  ],
-  number: [
-    { value: "=", label: "=" }, { value: "!=", label: "!=" },
-    { value: ">", label: ">" }, { value: "<", label: "<" },
-    { value: ">=", label: ">=" }, { value: "<=", label: "<=" },
-    { value: "between", label: "Between" },
-    { value: "isNull", label: "Is Null" }, { value: "isNotNull", label: "Is Not Null" },
-  ],
-  bool: [
-    { value: "isTrue", label: "True" }, { value: "isFalse", label: "False" },
-  ],
-  date: [
-    { value: "before", label: "Before" }, { value: "after", label: "After" },
-    { value: "between", label: "Between" }, { value: "onDate", label: "On Date" },
-    { value: "isNull", label: "Is Null" }, { value: "isNotNull", label: "Is Not Null" },
-  ],
-  other: [
-    { value: "equals", label: "Equals" }, { value: "notEquals", label: "Not Equals" },
-    { value: "isNull", label: "Is Null" }, { value: "isNotNull", label: "Is Not Null" },
-  ],
-};
-
 interface SelectedTable extends TableInfo { alias: string; instanceId: string }
 interface UICondition extends DataExplorerCondition { id: string }
-
-const newId = () => Math.random().toString(36).slice(2, 9);
-
-function aliasFor(name: string, used: Set<string>): string {
-  let base = name.replace(/[^A-Za-z0-9_]/g, "");
-  if (!base) base = "T";
-  if (!/^[A-Za-z_]/.test(base)) base = `T${base}`;
-  let i = 1;
-  let alias = `${base}${i}`;
-  while (used.has(alias)) alias = `${base}${++i}`;
-  return alias;
-}
-
-function cleanAlias(value: string): string {
-  const cleaned = value.replace(/[^A-Za-z0-9_]/g, "");
-  if (!cleaned) return "";
-  return /^[A-Za-z_]/.test(cleaned) ? cleaned : `T${cleaned}`;
-}
-
-const SAVED_KEY = "erp.dataExplorer.savedQueries.v1";
-interface SavedQuery {
-  name: string;
-  spec: DataExplorerSpec;
-  savedAt: number;
-}
-
-// ---- Grouping / Aggregation helpers ----
-type Agg = "sum" | "count" | "avg" | "min" | "max";
-const AGG_LABEL: Record<Agg, string> = { sum: "Sum", count: "Count", avg: "Avg", min: "Min", max: "Max" };
-const ALL_AGGS: Agg[] = ["sum", "count", "avg", "min", "max"];
-
-function calcAgg(rows: Record<string, unknown>[], col: string, agg: Agg): number | string {
-  if (agg === "count") return rows.length;
-  const nums: number[] = [];
-  for (const r of rows) {
-    const v = r[col];
-    if (v == null || v === "") continue;
-    const n = typeof v === "number" ? v : Number(v);
-    if (!Number.isNaN(n)) nums.push(n);
-  }
-  if (!nums.length) return "";
-  if (agg === "sum") return nums.reduce((a, b) => a + b, 0);
-  if (agg === "avg") return nums.reduce((a, b) => a + b, 0) / nums.length;
-  if (agg === "min") return Math.min(...nums);
-  if (agg === "max") return Math.max(...nums);
-  return "";
-}
-function fmtAgg(v: number | string): string {
-  if (typeof v !== "number") return String(v);
-  if (Number.isInteger(v)) return v.toString();
-  return v.toFixed(2);
-}
-
-interface GroupNode {
-  key: string;
-  label: string;
-  path: string;
-  rows: Record<string, unknown>[];
-  children?: GroupNode[];
-}
-function buildGroups(rows: Record<string, unknown>[], keys: string[], parentPath = ""): GroupNode[] {
-  if (!keys.length) return [];
-  const [head, ...rest] = keys;
-  const map = new Map<string, Record<string, unknown>[]>();
-  for (const r of rows) {
-    const k = r[head] == null ? "(null)" : String(r[head]);
-    if (!map.has(k)) map.set(k, []);
-    map.get(k)!.push(r);
-  }
-  return Array.from(map.entries()).map(([k, grs]) => {
-    const path = parentPath ? `${parentPath}▶${head}=${k}` : `${head}=${k}`;
-    return {
-      key: k,
-      label: `${head}: ${k}`,
-      path,
-      rows: grs,
-      children: rest.length ? buildGroups(grs, rest, path) : undefined,
-    };
-  });
-}
-
-// ---- Conditional Formatting ----
-type FmtOp =
-  | "=" | "!=" | ">" | "<" | ">=" | "<="
-  | "between" | "contains" | "notContains" | "startsWith" | "endsWith"
-  | "isNull" | "isNotNull" | "isTrue" | "isFalse";
-
-const FMT_OPS: { value: FmtOp; label: string; needsValue: boolean; needsValue2?: boolean }[] = [
-  { value: "=", label: "=", needsValue: true },
-  { value: "!=", label: "≠", needsValue: true },
-  { value: ">", label: ">", needsValue: true },
-  { value: "<", label: "<", needsValue: true },
-  { value: ">=", label: "≥", needsValue: true },
-  { value: "<=", label: "≤", needsValue: true },
-  { value: "between", label: "Between", needsValue: true, needsValue2: true },
-  { value: "contains", label: "Contains", needsValue: true },
-  { value: "notContains", label: "Not Contains", needsValue: true },
-  { value: "startsWith", label: "Starts With", needsValue: true },
-  { value: "endsWith", label: "Ends With", needsValue: true },
-  { value: "isNull", label: "Is Null", needsValue: false },
-  { value: "isNotNull", label: "Is Not Null", needsValue: false },
-  { value: "isTrue", label: "Is True", needsValue: false },
-  { value: "isFalse", label: "Is False", needsValue: false },
-];
-
-interface FormatRule {
-  id: string;
-  column: string;
-  op: FmtOp;
-  value: string;
-  value2: string;
-  bg: string;   // css color or ""
-  fg: string;   // css color or ""
-  bold: boolean;
-}
-
-const FMT_PRESETS: { label: string; bg: string; fg: string }[] = [
-  { label: "None",    bg: "",        fg: "" },
-  { label: "Red",     bg: "#fee2e2", fg: "#991b1b" },
-  { label: "Amber",   bg: "#fef3c7", fg: "#92400e" },
-  { label: "Green",   bg: "#dcfce7", fg: "#166534" },
-  { label: "Blue",    bg: "#dbeafe", fg: "#1e40af" },
-  { label: "Purple",  bg: "#ede9fe", fg: "#5b21b6" },
-  { label: "Slate",   bg: "#e2e8f0", fg: "#1e293b" },
-];
-
-function evalRule(rule: FormatRule, raw: unknown): boolean {
-  if (rule.op === "isNull") return raw == null || raw === "";
-  if (rule.op === "isNotNull") return !(raw == null || raw === "");
-  if (rule.op === "isTrue") return raw === true || raw === 1 || String(raw).toLowerCase() === "true";
-  if (rule.op === "isFalse") return raw === false || raw === 0 || String(raw).toLowerCase() === "false";
-  if (raw == null) return false;
-  const s = String(raw);
-  const vs = rule.value ?? "";
-  const asNum = (x: unknown) => {
-    const n = typeof x === "number" ? x : Number(x);
-    return Number.isNaN(n) ? null : n;
-  };
-  const numMode = asNum(raw) !== null && asNum(vs) !== null;
-  switch (rule.op) {
-    case "=":  return numMode ? asNum(raw) === asNum(vs) : s === vs;
-    case "!=": return numMode ? asNum(raw) !== asNum(vs) : s !== vs;
-    case ">":  return numMode ? (asNum(raw)! >  asNum(vs)!) : s >  vs;
-    case "<":  return numMode ? (asNum(raw)! <  asNum(vs)!) : s <  vs;
-    case ">=": return numMode ? (asNum(raw)! >= asNum(vs)!) : s >= vs;
-    case "<=": return numMode ? (asNum(raw)! <= asNum(vs)!) : s <= vs;
-    case "between": {
-      const a = asNum(vs), b = asNum(rule.value2);
-      const n = asNum(raw);
-      if (a != null && b != null && n != null) {
-        const lo = Math.min(a, b), hi = Math.max(a, b);
-        return n >= lo && n <= hi;
-      }
-      return s >= vs && s <= (rule.value2 ?? "");
-    }
-    case "contains":    return s.toLowerCase().includes(vs.toLowerCase());
-    case "notContains": return !s.toLowerCase().includes(vs.toLowerCase());
-    case "startsWith":  return s.toLowerCase().startsWith(vs.toLowerCase());
-    case "endsWith":    return s.toLowerCase().endsWith(vs.toLowerCase());
-  }
-  return false;
-}
-
-function styleForCell(
-  col: string,
-  row: Record<string, unknown>,
-  rules: FormatRule[],
-): { style: React.CSSProperties; bold: boolean } {
-  const style: React.CSSProperties = {};
-  let bold = false;
-  for (const r of rules) {
-    if (r.column !== col) continue;
-    if (!evalRule(r, row[col])) continue;
-    if (r.bg) style.backgroundColor = r.bg;
-    if (r.fg) style.color = r.fg;
-    if (r.bold) bold = true;
-  }
-  return { style, bold };
-}
-
-// ---- Calculated Columns (client-side, arithmetic only) ----
-interface CalcColumn {
-  id: string;
-  name: string;
-  expr: string;
-}
-
-type CalcValue = number | string | boolean | null;
-
-function tokenizeExpr(src: string): string[] {
-  const out: string[] = [];
-  let i = 0;
-  while (i < src.length) {
-    const ch = src[i];
-    if (/\s/.test(ch)) { i++; continue; }
-    // Multi-char comparison operators
-    const two = src.slice(i, i + 2);
-    if (two === "<>" || two === "!=" || two === "<=" || two === ">=") {
-      out.push(two); i += 2; continue;
-    }
-    if (ch === "=" || ch === "<" || ch === ">") { out.push(ch); i++; continue; }
-    if ("+-*/()".includes(ch)) { out.push(ch); i++; continue; }
-    if (/[0-9]/.test(ch) || (ch === "." && /[0-9]/.test(src[i + 1] ?? ""))) {
-      let j = i; while (j < src.length && /[0-9.]/.test(src[j])) j++;
-      out.push(src.slice(i, j)); i = j; continue;
-    }
-    if (ch === "'" || ch === '"') {
-      const quote = ch;
-      let j = i + 1; let s = "";
-      while (j < src.length) {
-        if (src[j] === quote) {
-          if (src[j + 1] === quote) { s += quote; j += 2; continue; }
-          break;
-        }
-        s += src[j]; j++;
-      }
-      if (j >= src.length) throw new Error(`Unclosed string`);
-      out.push("#" + s); i = j + 1; continue;
-    }
-    if (ch === "[") {
-      const end = src.indexOf("]", i + 1);
-      if (end < 0) throw new Error("Unclosed [ in expression");
-      out.push("$" + src.slice(i + 1, end).trim());
-      i = end + 1; continue;
-    }
-    if (/[A-Za-z_]/.test(ch)) {
-      let j = i; while (j < src.length && /[A-Za-z0-9_.]/.test(src[j])) j++;
-      out.push("$" + src.slice(i, j)); i = j; continue;
-    }
-    throw new Error(`Unexpected character "${ch}"`);
-  }
-  return out;
-}
-
-const COMPARE_OPS = new Set(["=", "<>", "!=", "<", ">", "<=", ">="]);
-
-function coerceCompare(a: CalcValue, b: CalcValue): [number | string | null, number | string | null] {
-  if (a === null || b === null || a === undefined || b === undefined) return [null, null];
-  // If both look numeric, compare as numbers
-  const na = typeof a === "number" ? a : Number(a);
-  const nb = typeof b === "number" ? b : Number(b);
-  if (typeof a !== "boolean" && typeof b !== "boolean" &&
-      Number.isFinite(na) && Number.isFinite(nb) &&
-      String(a).trim() !== "" && String(b).trim() !== "") {
-    return [na, nb];
-  }
-  return [String(a), String(b)];
-}
-
-function applyCompare(op: string, a: CalcValue, b: CalcValue): boolean | null {
-  const [x, y] = coerceCompare(a, b);
-  if (x === null || y === null) return null;
-  switch (op) {
-    case "=": return x === y;
-    case "<>":
-    case "!=": return x !== y;
-    case "<": return x < y;
-    case ">": return x > y;
-    case "<=": return x <= y;
-    case ">=": return x >= y;
-  }
-  return null;
-}
-
-function evalCalc(expr: string, row: Record<string, unknown>): CalcValue {
-  if (!expr.trim()) return null;
-  let tokens: string[];
-  try { tokens = tokenizeExpr(expr); } catch { return null; }
-  if (!tokens.length) return null;
-  let pos = 0;
-  const peek = () => tokens[pos];
-  const eat = () => tokens[pos++];
-
-  const parseAtom = (): CalcValue => {
-    const t = eat();
-    if (t === undefined) throw new Error("Unexpected end");
-    if (t === "(") {
-      const v = parseCompare();
-      if (eat() !== ")") throw new Error("Missing )");
-      return v;
-    }
-    if (t === "-") { const v = parseAtom(); return typeof v === "number" ? -v : (v == null ? null : -Number(v)); }
-    if (t === "+") return parseAtom();
-    if (t.startsWith("$")) {
-      const name = t.slice(1);
-      if (!(name in row)) return null;
-      const raw = row[name];
-      if (raw === null || raw === undefined) return null;
-      if (typeof raw === "number" || typeof raw === "boolean") return raw;
-      return String(raw);
-    }
-    if (t.startsWith("#")) return t.slice(1);
-    const n = Number(t);
-    if (!Number.isFinite(n)) throw new Error(`Bad number: ${t}`);
-    return n;
-  };
-  const parseMulDiv = (): CalcValue => {
-    let left = parseAtom();
-    while (peek() === "*" || peek() === "/") {
-      const op = eat();
-      const right = parseAtom();
-      const a = Number(left); const b = Number(right);
-      if (!Number.isFinite(a) || !Number.isFinite(b)) { left = null; continue; }
-      left = op === "*" ? a * b : (b === 0 ? null : a / b);
-    }
-    return left;
-  };
-  const parseAddSub = (): CalcValue => {
-    let left = parseMulDiv();
-    while (peek() === "+" || peek() === "-") {
-      const op = eat();
-      const right = parseMulDiv();
-      const a = Number(left); const b = Number(right);
-      if (!Number.isFinite(a) || !Number.isFinite(b)) { left = null; continue; }
-      left = op === "+" ? a + b : a - b;
-    }
-    return left;
-  };
-  const parseCompare = (): CalcValue => {
-    const left = parseAddSub();
-    if (peek() && COMPARE_OPS.has(peek())) {
-      const op = eat();
-      const right = parseAddSub();
-      return applyCompare(op, left, right);
-    }
-    return left;
-  };
-
-  try {
-    const v = parseCompare();
-    if (pos !== tokens.length) return null;
-    return v;
-  } catch {
-    return null;
-  }
-}
-
-function validateCalcExpr(expr: string, availableCols: string[]): { ok: boolean; error?: string } {
-  if (!expr.trim()) return { ok: false, error: "Empty expression" };
-  let tokens: string[];
-  try { tokens = tokenizeExpr(expr); } catch (e) { return { ok: false, error: (e as Error).message }; }
-  const missing = tokens
-    .filter((t) => t.startsWith("$"))
-    .map((t) => t.slice(1))
-    .filter((n) => !availableCols.includes(n));
-  if (missing.length) return { ok: false, error: `Unknown column(s): ${Array.from(new Set(missing)).join(", ")}` };
-  // dry-run
-  const sample: Record<string, unknown> = {};
-  for (const c of availableCols) sample[c] = 1;
-  try {
-    const _ = evalCalc(expr, sample);
-    void _;
-  } catch (e) {
-    return { ok: false, error: (e as Error).message };
-  }
-  return { ok: true };
-}
 
 export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean }) {
   const [tableSearch, setTableSearch] = useState("");
@@ -442,7 +47,7 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
   const [foreignKeys, setForeignKeys] = useState<ForeignKeyInfo[]>([]);
 
   const [queryName, setQueryName] = useState("");
-  const [limit, setLimit] = useState(100);
+  const [limit, setLimit] = useState<number | undefined>(undefined);
 
   const [running, setRunning] = useState(false);
   const [resultCols, setResultCols] = useState<string[]>([]);
@@ -454,7 +59,7 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [columnFilters, setColumnFilters] = useState<Record<string, Set<string>>>({});
-const [filterOpen, setFilterOpen] = useState<string | null>(null);
+  const [filterOpen, setFilterOpen] = useState<string | null>(null);
   const [groupBy, setGroupBy] = useState<string[]>([]);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [aggregates, setAggregates] = useState<Record<string, Set<Agg>>>({});
@@ -467,8 +72,7 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
   const resizeRef = useRef<{ col: string; startX: number; startW: number } | null>(null);
 
   const [loadOpen, setLoadOpen] = useState(false);
-    const [savedList, setSavedList] = useState<SavedQuery[]>([]);
-  // --- Import Script flow (additive state) ---
+  const [savedList, setSavedList] = useState<SavedQuery[]>([]);
   const [showImport, setShowImport] = useState(false);
   const [extSelect, setExtSelect] = useState<DataExplorerSelectColumn[] | undefined>(undefined);
   const [extGroupBy, setExtGroupBy] = useState<DataExplorerGroupBy[] | undefined>(undefined);
@@ -477,14 +81,12 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
   const [extDistinct, setExtDistinct] = useState<boolean | undefined>(undefined);
   const [extRawSql, setExtRawSql] = useState<string | undefined>(undefined);
 
-  // Load FKs once when component mounts (best-effort)
   useEffect(() => {
     const erp = getErp();
     if (!erp?.getForeignKeys) return;
     erp.getForeignKeys().then(setForeignKeys).catch(() => {});
   }, []);
 
-  // Filtered table list (sidebar)
   const filteredTables = useMemo(() => {
     const q = tableSearch.trim().toLowerCase();
     return schema.tables.filter((t) => {
@@ -524,7 +126,6 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
       return false;
     }
     setSelected((s) => s.map((x) => (x.alias === oldAlias ? { ...x, alias: cleaned } : x)));
-    // Update dependent references (joins & conditions) so nothing breaks.
     setJoins((js) => js.map((j) => ({
       ...j,
       leftAlias: j.leftAlias === oldAlias ? cleaned : j.leftAlias,
@@ -534,19 +135,12 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
     return true;
   };
 
-  // Columns for selected tables (with alias prefix)
   const aliasColumns = useMemo(() => {
     const out: { alias: string; column: string; type: string; cat: ColCat; full: string }[] = [];
     for (const t of selected) {
       const cols = schema.columns.filter((c) => c.schema === t.schema && c.table === t.name);
       for (const c of cols) {
-        out.push({
-          alias: t.alias,
-          column: c.column,
-          type: c.type,
-          cat: categoryOf(c.type),
-          full: `${t.alias}.${c.column}`,
-        });
+        out.push({ alias: t.alias, column: c.column, type: c.type, cat: categoryOf(c.type), full: `${t.alias}.${c.column}` });
       }
     }
     return out;
@@ -555,7 +149,6 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
   const colInfo = (alias: string, column: string) =>
     aliasColumns.find((c) => c.alias === alias && c.column === column);
 
-  // Auto-detect joins when 2+ tables are selected (preserve manual)
   useEffect(() => {
     if (selected.length < 2 || !foreignKeys.length) {
       setJoins((prev) => prev.filter((j) => j.source === "manual"));
@@ -566,32 +159,14 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
       for (let k = i + 1; k < selected.length; k++) {
         const a = selected[i];
         const b = selected[k];
-        const aToB = foreignKeys.find(
-          (f) => f.parentSchema === a.schema && f.parentTable === a.name && f.refSchema === b.schema && f.refTable === b.name,
-        );
+        const aToB = foreignKeys.find((f) => f.parentSchema === a.schema && f.parentTable === a.name && f.refSchema === b.schema && f.refTable === b.name);
         if (aToB) {
-          detected.push({
-            leftAlias: a.alias,
-            leftColumn: aToB.parentColumn,
-            rightAlias: b.alias,
-            rightColumn: aToB.refColumn,
-            joinType: "LEFT",
-            source: "auto",
-          });
+          detected.push({ leftAlias: a.alias, leftColumn: aToB.parentColumn, rightAlias: b.alias, rightColumn: aToB.refColumn, joinType: "LEFT", source: "auto" });
           continue;
         }
-        const bToA = foreignKeys.find(
-          (f) => f.parentSchema === b.schema && f.parentTable === b.name && f.refSchema === a.schema && f.refTable === a.name,
-        );
+        const bToA = foreignKeys.find((f) => f.parentSchema === b.schema && f.parentTable === b.name && f.refSchema === a.schema && f.refTable === a.name);
         if (bToA) {
-          detected.push({
-            leftAlias: a.alias,
-            leftColumn: bToA.refColumn,
-            rightAlias: b.alias,
-            rightColumn: bToA.parentColumn,
-            joinType: "LEFT",
-            source: "auto",
-          });
+          detected.push({ leftAlias: a.alias, leftColumn: bToA.refColumn, rightAlias: b.alias, rightColumn: bToA.parentColumn, joinType: "LEFT", source: "auto" });
         }
       }
     }
@@ -600,20 +175,12 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
 
   const addCondition = () => {
     const first = aliasColumns[0];
-    setConditions((c) => [
-      ...c,
-      {
-        id: newId(),
-        andOr: c.length === 0 ? "AND" : "AND",
-        alias: first?.alias ?? "",
-        column: first?.column ?? "",
-        operator: first ? OPS[first.cat][0].value : "equals",
-        value: "",
-      },
-    ]);
+    setConditions((c) => [...c, {
+      id: newId(), andOr: "AND", alias: first?.alias ?? "", column: first?.column ?? "",
+      operator: first ? OPS[first.cat][0].value : "equals", value: "",
+    }]);
   };
-  const removeCondition = (id: string) =>
-    setConditions((c) => c.filter((x) => x.id !== id));
+  const removeCondition = (id: string) => setConditions((c) => c.filter((x) => x.id !== id));
   const updateCondition = (id: string, patch: Partial<UICondition>) =>
     setConditions((c) => c.map((x) => (x.id === id ? { ...x, ...patch } : x)));
 
@@ -621,17 +188,16 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
     tables: selected.map((s) => ({ schema: s.schema, name: s.name, alias: s.alias })),
     joins,
     conditions: conditions.map(({ id: _id, ...rest }) => rest),
-    limit,
+    ...(limit !== undefined ? { limit } : {}),
     selectColumns: extSelect,
     groupBy: extGroupBy,
     orderBy: extOrderBy,
     windowFunctions: extWindows,
     distinct: extDistinct,
-    rawSql: extRawSql,        
+    rawSql: extRawSql,
   });
 
-  // Import Script → populate the existing builder + extended state.
-   const applyImportedSpec = (spec: DataExplorerSpec) => {
+  const applyImportedSpec = (spec: DataExplorerSpec) => {
     setSelected(spec.tables.map((t) => ({ ...t, alias: t.alias, instanceId: t.alias })));
     setJoins(spec.joins);
     setConditions(spec.conditions.map((c) => ({ ...c, id: Math.random().toString(36).slice(2, 9) })));
@@ -658,9 +224,7 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
     setRunning(true);
     try {
       const res = await erp.runDataExplorerQuery(spec);
-      const cols = res.columns.length
-        ? res.columns
-        : (res.rows[0] ? Object.keys(res.rows[0]) : []);
+      const cols = res.columns.length ? res.columns : (res.rows[0] ? Object.keys(res.rows[0]) : []);
       setResultCols(cols);
       const calcNames = calcCols.map((c) => c.name);
       setColOrder([...cols, ...calcNames.filter((n) => !cols.includes(n))]);
@@ -690,7 +254,6 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
     setResultCols([]); setResultRows([]); setQueryName("");
   };
 
-  // ---- Save / Load ----
   const loadSaved = (): SavedQuery[] => {
     try { return JSON.parse(localStorage.getItem(SAVED_KEY) || "[]"); } catch { return []; }
   };
@@ -719,16 +282,8 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
     });
     setQueryName(q.name);
     setSelected(savedTables);
-    setJoins(q.spec.joins.map((j) => ({
-      ...j,
-      leftAlias: aliasMap.get(j.leftAlias) || j.leftAlias,
-      rightAlias: aliasMap.get(j.rightAlias) || j.rightAlias,
-    })));
-    setConditions(q.spec.conditions.map((c) => ({
-      ...c,
-      alias: aliasMap.get(c.alias) || c.alias,
-      id: newId(),
-    })));
+    setJoins(q.spec.joins.map((j) => ({ ...j, leftAlias: aliasMap.get(j.leftAlias) || j.leftAlias, rightAlias: aliasMap.get(j.rightAlias) || j.rightAlias })));
+    setConditions(q.spec.conditions.map((c) => ({ ...c, alias: aliasMap.get(c.alias) || c.alias, id: newId() })));
     setLimit(q.spec.limit);
     setLoadOpen(false);
     toast.success(`Loaded "${q.name}"`);
@@ -739,12 +294,8 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
     setSavedList(list);
   };
 
-  // ---- Calculated columns integration ----
   const calcNames = useMemo(() => calcCols.map((c) => c.name), [calcCols]);
-  const allCols = useMemo(
-    () => [...resultCols, ...calcNames.filter((n) => !resultCols.includes(n))],
-    [resultCols, calcNames],
-  );
+  const allCols = useMemo(() => [...resultCols, ...calcNames.filter((n) => !resultCols.includes(n))], [resultCols, calcNames]);
   const augmentedRows = useMemo(() => {
     if (!calcCols.length) return resultRows;
     return resultRows.map((r) => {
@@ -757,7 +308,9 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
     });
   }, [resultRows, calcCols]);
 
-  // Keep colOrder in sync when calc columns are added/removed.
+  const deferredRows = useDeferredValue(augmentedRows);
+  const isStale = deferredRows !== augmentedRows;
+
   useEffect(() => {
     if (!resultCols.length) return;
     setColOrder((prev) => {
@@ -767,10 +320,9 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
     });
   }, [calcNames, resultCols]);
 
-  // ---- Results: sort + paginate ----
   const sortedRows = useMemo(() => {
-    if (!sortKey) return augmentedRows;
-    const arr = [...augmentedRows];
+    if (!sortKey) return deferredRows;
+    const arr = [...deferredRows];
     arr.sort((a, b) => {
       const av = a[sortKey] as unknown; const bv = b[sortKey] as unknown;
       if (av == null && bv == null) return 0;
@@ -781,53 +333,33 @@ const [filterOpen, setFilterOpen] = useState<string | null>(null);
       return sortDir === "asc" ? as.localeCompare(bs) : bs.localeCompare(as);
     });
     return arr;
-  }, [augmentedRows, sortKey, sortDir]);
+  }, [deferredRows, sortKey, sortDir]);
 
-const filteredRows = useMemo(() => {
-  let rows = sortedRows;
+  const filteredRows = useMemo(() => {
+    let rows = sortedRows;
+    Object.entries(columnFilters).forEach(([col, values]) => {
+      if (values.size > 0) { rows = rows.filter((r) => values.has(String(r[col] ?? ""))); }
+    });
+    return rows;
+  }, [sortedRows, columnFilters]);
 
-  Object.entries(columnFilters).forEach(([col, values]) => {
-    if (values.size > 0) {
-      rows = rows.filter((r) =>
-        values.has(String(r[col] ?? ""))
-      );
+  const pageRows = useMemo(() => {
+    const start = (page - 1) * pageSize;
+    return filteredRows.slice(start, start + pageSize);
+  }, [filteredRows, page, pageSize]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+
+  const columnValuesCache = useMemo(() => {
+    const cache: Record<string, string[]> = {};
+    for (const c of allCols) {
+      const set = new Set<string>();
+      for (const r of augmentedRows) { set.add(String(r[c] ?? "")); }
+      cache[c] = Array.from(set).sort();
     }
-  });
+    return cache;
+  }, [augmentedRows, allCols]);
 
-  return rows;
-}, [sortedRows, columnFilters]);
-
-
-const pageRows = useMemo(() => {
-  const start = (page - 1) * pageSize;
-  return filteredRows.slice(start, start + pageSize);
-}, [filteredRows, page, pageSize]);
-
-
-const totalPages = Math.max(
-  1,
-  Math.ceil(filteredRows.length / pageSize)
-);
-
-  const exportCSV = () => {
-    if (!augmentedRows.length) { toast.error("Nothing to export."); return; }
-    const esc = (v: unknown) => {
-      if (v == null) return "";
-      const s = String(v);
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
-    const csv = [
-      allCols.join(","),
-      ...augmentedRows.map((r) => allCols.map((c) => esc(r[c])).join(",")),
-    ].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `data-explorer-${Date.now()}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
   const copyResults = async () => {
     if (!augmentedRows.length) { toast.error("Nothing to copy."); return; }
     const text = [
@@ -838,38 +370,16 @@ const totalPages = Math.max(
     toast.success("Copied to clipboard");
   };
 
-  // ---- Column customization helpers ----
-  const getColumnValues = (col:string) => {
-  return Array.from(
-    new Set(
-      augmentedRows.map(r => String(r[col] ?? ""))
-    )
-  ).sort();
-};
-  const hideAllCols = () => {
-  setHiddenCols(new Set(allCols));
-};
-
-const showAllCols = () => {
-  setHiddenCols(new Set());
-};
-  const visibleCols = useMemo(
-    () => colOrder.filter((c) => !hiddenCols.has(c)),
-    [colOrder, hiddenCols],
-  );
+  const hideAllCols = () => setHiddenCols(new Set(allCols));
+  const showAllCols = () => setHiddenCols(new Set());
+  const visibleCols = useMemo(() => colOrder.filter((c) => !hiddenCols.has(c)), [colOrder, hiddenCols]);
   const filteredResultCols = useMemo(() => {
-  const q = columnSearch.trim().toLowerCase();
-
-  if (!q) return allCols;
-
-  return allCols.filter((c) =>
-    c.toLowerCase().includes(q)
-  );
-}, [allCols, columnSearch]);
+    const q = columnSearch.trim().toLowerCase();
+    if (!q) return allCols;
+    return allCols.filter((c) => c.toLowerCase().includes(q));
+  }, [allCols, columnSearch]);
   const hideCol = (c: string) => setHiddenCols((s) => new Set(s).add(c));
-  const showCol = (c: string) => setHiddenCols((s) => {
-    const n = new Set(s); n.delete(c); return n;
-  });
+  const showCol = (c: string) => setHiddenCols((s) => { const n = new Set(s); n.delete(c); return n; });
   const onHeaderDragStart = (c: string) => (e: React.DragEvent) => {
     dragColRef.current = c;
     e.dataTransfer.effectAllowed = "move";
@@ -912,24 +422,16 @@ const showAllCols = () => {
   const summaryCols = useMemo(() => Object.keys(aggregates), [aggregates]);
   const hasSummaries = summaryCols.length > 0;
   const isGrouped = groupBy.length > 0;
+  const groupedTree = useMemo(() => (isGrouped ? buildGroups(filteredRows, groupBy) : []), [isGrouped, filteredRows, groupBy]);
 
-  const groupedTree = useMemo(
-    () => (isGrouped ? buildGroups(filteredRows, groupBy) : []),
-    [isGrouped, filteredRows, groupBy],
-  );
-
-  // Render helpers used by the results table when grouping is active.
   const renderGroupFooter = (nodePath: string, rows: Record<string, unknown>[], depth: number, visible: string[]) => (
     <tr key={`gf-${nodePath}`} className="bg-muted/20 border-b border-border">
       {visible.map((c, idx) => {
         const aggs = aggregates[c];
         const parts = aggs ? Array.from(aggs).map((a) => `${AGG_LABEL[a]}: ${fmtAgg(calcAgg(rows, c, a))}`) : [];
         return (
-          <td
-            key={c}
-            style={{ width: colWidths[c] ?? 160, paddingLeft: idx === 0 ? 12 + (depth + 1) * 14 : undefined }}
-            className="px-3 py-1 text-[11px] font-medium text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis"
-          >
+          <td key={c} style={{ width: colWidths[c] ?? 160, paddingLeft: idx === 0 ? 12 + (depth + 1) * 14 : undefined }}
+            className="px-3 py-1 text-[11px] font-medium text-muted-foreground whitespace-nowrap overflow-hidden text-ellipsis">
             {idx === 0 && !parts.length ? "Subtotal" : parts.join("  ·  ")}
           </td>
         );
@@ -944,10 +446,7 @@ const showAllCols = () => {
       out.push(
         <tr key={`gh-${node.path}`} className="bg-muted/40 border-b border-border">
           <td colSpan={visible.length} className="px-3 py-1.5 text-xs" style={{ paddingLeft: 12 + depth * 14 }}>
-            <button
-              onClick={() => toggleGroup(node.path)}
-              className="flex items-center gap-1 font-semibold text-foreground hover:text-primary"
-            >
+            <button onClick={() => toggleGroup(node.path)} className="flex items-center gap-1 font-semibold text-foreground hover:text-primary">
               {isCollapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
               <span className="font-mono">{node.label}</span>
               <Badge variant="secondary" className="ml-1.5 text-[10px]">{node.rows.length}</Badge>
@@ -965,11 +464,8 @@ const showAllCols = () => {
               {visible.map((c, idx) => {
                 const fmt = styleForCell(c, r, formatRules);
                 return (
-                  <td
-                    key={c}
-                    style={{ width: colWidths[c] ?? 160, paddingLeft: idx === 0 ? 12 + (depth + 1) * 14 : undefined, ...fmt.style }}
-                    className={`px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis ${fmt.bold ? "font-bold" : ""}`}
-                  >
+                  <td key={c} style={{ width: colWidths[c] ?? 160, paddingLeft: idx === 0 ? 12 + (depth + 1) * 14 : undefined, ...fmt.style }}
+                    className={`px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis ${fmt.bold ? "font-bold" : ""}`}>
                     {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
                   </td>
                 );
@@ -983,7 +479,6 @@ const showAllCols = () => {
     return out;
   };
 
-  // ===== render =====
   return (
     <div className="grid grid-cols-[360px_1fr] min-h-[calc(100vh-49px)]">
       {/* ---------- Sidebar ---------- */}
@@ -995,14 +490,7 @@ const showAllCols = () => {
           </div>
         </div>
         <div className="border-b border-border p-3">
-          <div className="relative">
-            <Input
-              value={tableSearch}
-              onChange={(e) => setTableSearch(e.target.value)}
-              placeholder="Search tables…"
-              className="h-8 text-xs"
-            />
-          </div>
+          <Input value={tableSearch} onChange={(e) => setTableSearch(e.target.value)} placeholder="Search tables…" className="h-8 text-xs" />
           <label className="mt-2 flex items-center gap-2 text-[11px] text-muted-foreground">
             <Checkbox checked={showSystem} onCheckedChange={(v) => setShowSystem(!!v)} />
             Show system tables
@@ -1015,26 +503,15 @@ const showAllCols = () => {
               {filteredTables.map((t) => {
                 const count = instanceCount(t);
                 return (
-                  <div
-                    key={`${t.schema}.${t.name}`}
-                    className="group flex w-full items-center gap-1 rounded border border-transparent px-2 py-1.5 text-xs hover:border-border hover:bg-accent"
-                  >
+                  <div key={`${t.schema}.${t.name}`} className="group flex w-full items-center gap-1 rounded border border-transparent px-2 py-1.5 text-xs hover:border-border hover:bg-accent">
                     <TableIcon className="h-3 w-3 text-muted-foreground" />
                     <div className="min-w-0 flex-1 overflow-hidden">
-                      <div className="truncate font-mono"title={t.name}>{t.name}</div>
+                      <div className="truncate font-mono" title={t.name}>{t.name}</div>
                       <div className="truncate text-[10px] text-muted-foreground">{t.schema}</div>
                     </div>
-                    {count > 0 && (
-                      <Badge variant="secondary" className="h-4 px-1 text-[10px]">×{count}</Badge>
-                    )}
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => addTableInstance(t)}
-                      className="h-6 w-6 shrink-0 p-0"
-                    >
-                      <Plus className="h-3 w-3" /> 
+                    {count > 0 && <Badge variant="secondary" className="h-4 px-1 text-[10px]">×{count}</Badge>}
+                    <Button type="button" variant="outline" size="sm" onClick={() => addTableInstance(t)} className="h-6 w-6 shrink-0 p-0">
+                      <Plus className="h-3 w-3" />
                     </Button>
                   </div>
                 );
@@ -1046,9 +523,7 @@ const showAllCols = () => {
           <div className="mb-2 flex items-center justify-between">
             <Label className="text-xs font-medium">Selected Tables ({selected.length})</Label>
             {selected.length > 0 && (
-              <button onClick={clearSelectedTables} className="text-[11px] text-primary hover:underline">
-                Clear All
-              </button>
+              <button onClick={clearSelectedTables} className="text-[11px] text-primary hover:underline">Clear All</button>
             )}
           </div>
           <div className="space-y-1.5 max-h-48 overflow-auto">
@@ -1066,57 +541,44 @@ const showAllCols = () => {
                   <Input
                     key={t.alias}
                     defaultValue={t.alias}
-                    onBlur={(e) => {
-                      if (!renameAlias(t.alias, e.target.value)) e.currentTarget.value = t.alias;
-                    }}
+                    onBlur={(e) => { if (!renameAlias(t.alias, e.target.value)) e.currentTarget.value = t.alias; }}
                     onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
                     className="h-6 flex-1 px-1.5 py-0 text-xs font-mono"
                   />
                 </div>
               </div>
             ))}
-            {!selected.length && (
-              <div className="text-[11px] text-muted-foreground italic">No tables selected</div>
-            )}
+            {!selected.length && <div className="text-[11px] text-muted-foreground italic">No tables selected</div>}
           </div>
         </div>
       </aside>
 
-
       {/* ---------- Main ---------- */}
       <main className="flex flex-col min-w-0">
-        {/* Header: Query Builder toolbar */}
         <div className="border-b border-border bg-card/30 px-4 py-3">
-        {showImport && (
-<ImportScriptPanel
-  onApplySpec={applyImportedSpec}
-  onRunQuery={runQuery}
-  onClearResults={() => {
-    setExtRawSql(undefined);
-    setResultCols([]);
-    setResultRows([]);
-    setColOrder([]);
-    setGroupBy([]);
-    setAggregates({});
-    setFormatRules([]);
-    setCalcCols([]);
-    toast.info("Script cleared — back to Query Builder mode.");
-  }}
-  running={running}
-/>
-)}
+          {showImport && (
+            <ImportScriptPanel
+              onApplySpec={applyImportedSpec}
+              onRunQuery={runQuery}
+              onClearResults={() => {
+                setExtRawSql(undefined);
+                setResultCols([]); setResultRows([]); setColOrder([]);
+                setGroupBy([]); setAggregates({}); setFormatRules([]); setCalcCols([]);
+                toast.info("Script cleared — back to Query Builder mode.");
+              }}
+              running={running}
+            />
+          )}
           <div className="mb-3 flex flex-wrap items-center gap-2">
             <h2 className="mr-3 text-sm font-semibold">Query Builder</h2>
             <div className="flex flex-1 items-center gap-2 min-w-[260px]">
               <Label className="text-xs text-muted-foreground whitespace-nowrap">Query name (optional)</Label>
-              <Input
-                value={queryName}
-                onChange={(e) => setQueryName(e.target.value)}
-                placeholder="Enter query name…"
-                className="h-8 text-xs max-w-sm"
-              />
+              <Input value={queryName} onChange={(e) => setQueryName(e.target.value)} placeholder="Enter query name…" className="h-8 text-xs max-w-sm" />
             </div>
             <div className="flex items-center gap-1.5">
+              <Label className="text-xs text-muted-foreground whitespace-nowrap">Limit</Label>
+              <Input type="number" value={limit ?? ""} onChange={(e) => setLimit(e.target.value ? Number(e.target.value) : undefined)}
+                placeholder="No limit" className="h-8 w-20 text-xs" min={1} />
               <Button variant="outline" size="sm" onClick={() => setShowImport((v) => !v)}>
                 <FileCode2 className="h-4 w-4 mr-1.5" /> Import Script
               </Button>
@@ -1143,9 +605,7 @@ const showAllCols = () => {
             </div>
             <div className="divide-y divide-border">
               {conditions.length === 0 && (
-                <div className="px-3 py-4 text-center text-xs text-muted-foreground">
-                  No conditions. Click "Add new condition" below to start.
-                </div>
+                <div className="px-3 py-4 text-center text-xs text-muted-foreground">No conditions. Click "Add new condition" below to start.</div>
               )}
               {conditions.map((c, i) => {
                 const ci = colInfo(c.alias, c.column);
@@ -1153,10 +613,7 @@ const showAllCols = () => {
                 const ops = OPS[cat];
                 const needsValue = !["isTrue", "isFalse", "isNull", "isNotNull"].includes(c.operator);
                 const needsValue2 = c.operator === "between";
-                const inputType =
-                  cat === "number" ? "number" :
-                  cat === "date" ? (c.operator === "onDate" || ["before", "after"].includes(c.operator) ? "date" : "date") :
-                  "text";
+                const inputType = cat === "number" ? "number" : cat === "date" ? "date" : "text";
                 return (
                   <div key={c.id} className="grid grid-cols-[80px_100px_1fr_180px_1fr_70px_60px] items-center gap-2 px-3 py-1.5 text-xs">
                     <div className="flex items-center gap-1">
@@ -1168,21 +625,16 @@ const showAllCols = () => {
                     ) : (
                       <Select value={c.andOr} onValueChange={(v) => updateCondition(c.id, { andOr: v as "AND" | "OR" })}>
                         <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="AND">And</SelectItem>
-                          <SelectItem value="OR">Or</SelectItem>
-                        </SelectContent>
+                        <SelectContent><SelectItem value="AND">And</SelectItem><SelectItem value="OR">Or</SelectItem></SelectContent>
                       </Select>
                     )}
-                    <Select
-                      value={c.alias && c.column ? `${c.alias}|${c.column}` : ""}
+                    <Select value={c.alias && c.column ? `${c.alias}|${c.column}` : ""}
                       onValueChange={(v) => {
                         const [alias, column] = v.split("|");
                         const info = colInfo(alias, column);
                         const firstOp = info ? OPS[info.cat][0].value : "equals";
                         updateCondition(c.id, { alias, column, operator: firstOp, value: "" });
-                      }}
-                    >
+                      }}>
                       <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="Select field…" /></SelectTrigger>
                       <SelectContent>
                         {aliasColumns.map((ac) => (
@@ -1195,47 +647,24 @@ const showAllCols = () => {
                     </Select>
                     <Select value={c.operator} onValueChange={(v) => updateCondition(c.id, { operator: v })}>
                       <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {ops.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
-                      </SelectContent>
+                      <SelectContent>{ops.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent>
                     </Select>
                     <div className="flex items-center gap-1">
                       {cat === "bool" || !needsValue ? (
                         <span className="text-[11px] text-muted-foreground italic">—</span>
                       ) : (
                         <>
-                          <Input
-                            type={inputType}
-                            value={String(c.value ?? "")}
-                            onChange={(e) => updateCondition(c.id, { value: e.target.value })}
-                            className="h-7 text-xs"
-                          />
-                          {needsValue2 && (
-                            <Input
-                              type={inputType}
-                              value={String(c.value2 ?? "")}
-                              onChange={(e) => updateCondition(c.id, { value2: e.target.value })}
-                              className="h-7 text-xs"
-                              placeholder="and"
-                            />
-                          )}
+                          <Input type={inputType} value={String(c.value ?? "")} onChange={(e) => updateCondition(c.id, { value: e.target.value })} className="h-7 text-xs" />
+                          {needsValue2 && <Input type={inputType} value={String(c.value2 ?? "")} onChange={(e) => updateCondition(c.id, { value2: e.target.value })} className="h-7 text-xs" placeholder="and" />}
                         </>
                       )}
                     </div>
                     <div className="flex items-center justify-center gap-1">
-                      <button
-                        onClick={() => updateCondition(c.id, { groupOpen: !c.groupOpen })}
-                        className={`rounded px-1 text-[11px] ${c.groupOpen ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                      >(</button>
-                      <button
-                        onClick={() => updateCondition(c.id, { groupClose: !c.groupClose })}
-                        className={`rounded px-1 text-[11px] ${c.groupClose ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
-                      >)</button>
+                      <button onClick={() => updateCondition(c.id, { groupOpen: !c.groupOpen })} className={`rounded px-1 text-[11px] ${c.groupOpen ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}>(</button>
+                      <button onClick={() => updateCondition(c.id, { groupClose: !c.groupClose })} className={`rounded px-1 text-[11px] ${c.groupClose ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}>)</button>
                     </div>
                     <div className="text-right">
-                      <button onClick={() => removeCondition(c.id)} className="text-muted-foreground hover:text-destructive">
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      <button onClick={() => removeCondition(c.id)} className="text-muted-foreground hover:text-destructive"><Trash2 className="h-3.5 w-3.5" /></button>
                     </div>
                   </div>
                 );
@@ -1255,88 +684,51 @@ const showAllCols = () => {
                 <Link2 className="h-3.5 w-3.5 text-muted-foreground" />
                 <span className="text-xs font-medium">Join Builder</span>
                 <Badge variant="outline" className="text-[10px]">Auto Detect Joins</Badge>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="ml-auto h-7 text-xs"
-                  disabled={selected.length < 2}
+                <Button size="sm" variant="outline" className="ml-auto h-7 text-xs" disabled={selected.length < 2}
                   onClick={() => {
                     const l = selected[0], r = selected[1];
                     if (!l || !r) return;
-                    setJoins((js) => [
-                      ...js,
-                      {
-                        leftAlias: l.alias, leftColumn: "",
-                        rightAlias: r.alias, rightColumn: "",
-                        joinType: "INNER", source: "manual",
-                      },
-                    ]);
-                  }}
-                >
+                    setJoins((js) => [...js, { leftAlias: l.alias, leftColumn: "", rightAlias: r.alias, rightColumn: "", joinType: "INNER", source: "manual" }]);
+                  }}>
                   <Plus className="mr-1 h-3 w-3" /> Add Manual Join
                 </Button>
               </div>
-              {joins.length === 0 && (
-                <div className="text-[11px] text-muted-foreground italic">
-                  No joins yet. Auto-detected joins appear here when tables share foreign keys.
-                </div>
-              )}
+              {joins.length === 0 && <div className="text-[11px] text-muted-foreground italic">No joins yet. Auto-detected joins appear here when tables share foreign keys.</div>}
               <div className="space-y-1.5">
                 {joins.map((j, i) => {
                   const isManual = j.source === "manual";
                   const leftCols = aliasColumns.filter((c) => c.alias === j.leftAlias);
                   const rightCols = aliasColumns.filter((c) => c.alias === j.rightAlias);
-                  const patch = (p: Partial<DataExplorerJoin>) =>
-                    setJoins((js) => js.map((x, idx) => (idx === i ? { ...x, ...p } : x)));
+                  const patch = (p: Partial<DataExplorerJoin>) => setJoins((js) => js.map((x, idx) => (idx === i ? { ...x, ...p } : x)));
                   return (
                     <div key={i} className="flex flex-wrap items-center gap-1.5 rounded border border-border/60 bg-background/40 px-2 py-1.5 text-xs">
-                      <Badge variant={isManual ? "default" : "secondary"} className="text-[10px]">
-                        {isManual ? "MANUAL" : "AUTO"}
-                      </Badge>
+                      <Badge variant={isManual ? "default" : "secondary"} className="text-[10px]">{isManual ? "MANUAL" : "AUTO"}</Badge>
                       {isManual ? (
                         <>
                           <Select value={j.leftAlias} onValueChange={(v) => patch({ leftAlias: v, leftColumn: "" })}>
                             <SelectTrigger className="h-7 w-[90px] text-xs"><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              {selected.map((s) => (
-                                <SelectItem key={s.alias} value={s.alias}>{s.alias}</SelectItem>
-                              ))}
-                            </SelectContent>
+                            <SelectContent>{selected.map((s) => <SelectItem key={s.alias} value={s.alias}>{s.alias}</SelectItem>)}</SelectContent>
                           </Select>
                           <Select value={j.leftColumn} onValueChange={(v) => patch({ leftColumn: v })}>
                             <SelectTrigger className="h-7 w-[140px] text-xs"><SelectValue placeholder="col" /></SelectTrigger>
-                            <SelectContent>
-                              {leftCols.map((c) => (
-                                <SelectItem key={c.column} value={c.column}>{c.column}</SelectItem>
-                              ))}
-                            </SelectContent>
+                            <SelectContent>{leftCols.map((c) => <SelectItem key={c.column} value={c.column}>{c.column}</SelectItem>)}</SelectContent>
                           </Select>
                           <Select value={j.joinType || "INNER"} onValueChange={(v) => patch({ joinType: v as DataExplorerJoin["joinType"] })}>
                             <SelectTrigger className="h-7 w-[110px] text-xs"><SelectValue /></SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="INNER">INNER JOIN</SelectItem>
-                              <SelectItem value="LEFT">LEFT JOIN</SelectItem>
-                              <SelectItem value="RIGHT">RIGHT JOIN</SelectItem>
-                              <SelectItem value="FULL">FULL OUTER</SelectItem>
+                              <SelectItem value="INNER">INNER JOIN</SelectItem><SelectItem value="LEFT">LEFT JOIN</SelectItem>
+                              <SelectItem value="RIGHT">RIGHT JOIN</SelectItem><SelectItem value="FULL">FULL OUTER</SelectItem>
                               <SelectItem value="CROSS">CROSS JOIN</SelectItem>
                             </SelectContent>
                           </Select>
                           <Select value={j.rightAlias} onValueChange={(v) => patch({ rightAlias: v, rightColumn: "" })}>
                             <SelectTrigger className="h-7 w-[90px] text-xs"><SelectValue /></SelectTrigger>
-                            <SelectContent>
-                              {selected.map((s) => (
-                                <SelectItem key={s.alias} value={s.alias}>{s.alias}</SelectItem>
-                              ))}
-                            </SelectContent>
+                            <SelectContent>{selected.map((s) => <SelectItem key={s.alias} value={s.alias}>{s.alias}</SelectItem>)}</SelectContent>
                           </Select>
                           {j.joinType !== "CROSS" && (
                             <Select value={j.rightColumn} onValueChange={(v) => patch({ rightColumn: v })}>
                               <SelectTrigger className="h-7 w-[140px] text-xs"><SelectValue placeholder="col" /></SelectTrigger>
-                              <SelectContent>
-                                {rightCols.map((c) => (
-                                  <SelectItem key={c.column} value={c.column}>{c.column}</SelectItem>
-                                ))}
-                              </SelectContent>
+                              <SelectContent>{rightCols.map((c) => <SelectItem key={c.column} value={c.column}>{c.column}</SelectItem>)}</SelectContent>
                             </Select>
                           )}
                         </>
@@ -1346,20 +738,16 @@ const showAllCols = () => {
                           <Select value={j.joinType || "LEFT"} onValueChange={(v) => patch({ joinType: v as DataExplorerJoin["joinType"] })}>
                             <SelectTrigger className="h-7 w-[110px] text-xs"><SelectValue /></SelectTrigger>
                             <SelectContent>
-                              <SelectItem value="INNER">INNER JOIN</SelectItem>
-                              <SelectItem value="LEFT">LEFT JOIN</SelectItem>
-                              <SelectItem value="RIGHT">RIGHT JOIN</SelectItem>
-                              <SelectItem value="FULL">FULL OUTER</SelectItem>
+                              <SelectItem value="INNER">INNER JOIN</SelectItem><SelectItem value="LEFT">LEFT JOIN</SelectItem>
+                              <SelectItem value="RIGHT">RIGHT JOIN</SelectItem><SelectItem value="FULL">FULL OUTER</SelectItem>
                             </SelectContent>
                           </Select>
                           <Badge variant="secondary" className="font-mono">{j.rightAlias}.{j.rightColumn}</Badge>
                         </>
                       )}
-                      <button
-                        onClick={() => setJoins((js) => js.filter((_, idx) => idx !== i))}
-                        className="ml-auto text-muted-foreground hover:text-destructive"
-                        title="Delete join"
-                      ><X className="h-3.5 w-3.5" /></button>
+                      <button onClick={() => setJoins((js) => js.filter((_, idx) => idx !== i))} className="ml-auto text-muted-foreground hover:text-destructive" title="Delete join">
+                        <X className="h-3.5 w-3.5" />
+                      </button>
                     </div>
                   );
                 })}
@@ -1368,17 +756,16 @@ const showAllCols = () => {
           )}
         </div>
 
-
-        {/* Results */}
+        {/* Results toolbar */}
         <div className="flex items-center justify-between border-b border-border bg-background px-4 py-2 text-xs">
           <div className="flex items-center gap-3">
             <span className="font-semibold">Results</span>
-            <ResultExportMenu
-  rows={augmentedRows}
-  cols={allCols}
-  baseName={`data-explorer-${Date.now()}`}
-  disabled={!resultRows.length}
-/>
+            {isStale && (
+              <span className="flex items-center gap-1 text-[11px] text-primary">
+                <Loader2 className="h-3 w-3 animate-spin" /> Processing…
+              </span>
+            )}
+            <ResultExportMenu rows={augmentedRows} cols={allCols} baseName={`data-explorer-${Date.now()}`} disabled={!resultRows.length} />
             <Button variant="ghost" size="sm" onClick={copyResults} disabled={!resultRows.length}>
               <Copy className="mr-1.5 h-3.5 w-3.5" /> Copy
             </Button>
@@ -1388,17 +775,13 @@ const showAllCols = () => {
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="sm" disabled={!resultCols.length}>
                   <Layers className="mr-1.5 h-3.5 w-3.5" /> Group By
-                  {groupBy.length > 0 && (
-                    <Badge variant="secondary" className="ml-1.5 text-[10px]">{groupBy.length}</Badge>
-                  )}
+                  {groupBy.length > 0 && <Badge variant="secondary" className="ml-1.5 text-[10px]">{groupBy.length}</Badge>}
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="start" className="w-72 p-2">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-xs font-semibold">Group by columns (in order)</span>
-                  {groupBy.length > 0 && (
-                    <button className="text-[11px] text-primary hover:underline" onClick={() => setGroupBy([])}>Clear</button>
-                  )}
+                  {groupBy.length > 0 && <button className="text-[11px] text-primary hover:underline" onClick={() => setGroupBy([])}>Clear</button>}
                 </div>
                 {groupBy.length > 0 && (
                   <div className="mb-2 space-y-1">
@@ -1406,36 +789,18 @@ const showAllCols = () => {
                       <div key={c} className="flex items-center gap-1 rounded border border-border bg-background/60 px-2 py-1 text-xs">
                         <span className="w-4 text-[10px] text-muted-foreground">{i + 1}.</span>
                         <span className="flex-1 truncate font-mono">{c}</span>
-                        <button
-                          disabled={i === 0}
-                          onClick={() => setGroupBy((g) => { const n = [...g]; [n[i - 1], n[i]] = [n[i], n[i - 1]]; return n; })}
-                          className="text-muted-foreground hover:text-foreground disabled:opacity-30"
-                          title="Move up"
-                        >↑</button>
-                        <button
-                          disabled={i === groupBy.length - 1}
-                          onClick={() => setGroupBy((g) => { const n = [...g]; [n[i], n[i + 1]] = [n[i + 1], n[i]]; return n; })}
-                          className="text-muted-foreground hover:text-foreground disabled:opacity-30"
-                          title="Move down"
-                        >↓</button>
-                        <button onClick={() => setGroupBy((g) => g.filter((x) => x !== c))} className="text-muted-foreground hover:text-destructive">
-                          <X className="h-3 w-3" />
-                        </button>
+                        <button disabled={i === 0} onClick={() => setGroupBy((g) => { const n = [...g]; [n[i - 1], n[i]] = [n[i], n[i - 1]]; return n; })} className="text-muted-foreground hover:text-foreground disabled:opacity-30" title="Move up">↑</button>
+                        <button disabled={i === groupBy.length - 1} onClick={() => setGroupBy((g) => { const n = [...g]; [n[i], n[i + 1]] = [n[i + 1], n[i]]; return n; })} className="text-muted-foreground hover:text-foreground disabled:opacity-30" title="Move down">↓</button>
+                        <button onClick={() => setGroupBy((g) => g.filter((x) => x !== c))} className="text-muted-foreground hover:text-destructive"><X className="h-3 w-3" /></button>
                       </div>
                     ))}
                   </div>
                 )}
                 <Select value="" onValueChange={(v) => setGroupBy((g) => (g.includes(v) ? g : [...g, v]))}>
                   <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="Add column…" /></SelectTrigger>
-                  <SelectContent>
-                    {allCols.filter((c) => !groupBy.includes(c)).map((c) => (
-                      <SelectItem key={c} value={c}>{c}</SelectItem>
-                    ))}
-                  </SelectContent>
+                  <SelectContent>{allCols.filter((c) => !groupBy.includes(c)).map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
                 </Select>
-                <div className="mt-2 text-[10px] text-muted-foreground">
-                  Group headers are collapsible. Group footers show summaries configured under "Summaries".
-                </div>
+                <div className="mt-2 text-[10px] text-muted-foreground">Group headers are collapsible. Group footers show summaries configured under "Summaries".</div>
               </PopoverContent>
             </Popover>
 
@@ -1444,21 +809,15 @@ const showAllCols = () => {
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="sm" disabled={!resultCols.length}>
                   <Sigma className="mr-1.5 h-3.5 w-3.5" /> Summaries
-                  {Object.keys(aggregates).length > 0 && (
-                    <Badge variant="secondary" className="ml-1.5 text-[10px]">{Object.keys(aggregates).length}</Badge>
-                  )}
+                  {Object.keys(aggregates).length > 0 && <Badge variant="secondary" className="ml-1.5 text-[10px]">{Object.keys(aggregates).length}</Badge>}
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="start" className="w-80 p-2">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-xs font-semibold">Column summaries</span>
-                  {Object.keys(aggregates).length > 0 && (
-                    <button className="text-[11px] text-primary hover:underline" onClick={() => setAggregates({})}>Clear all</button>
-                  )}
+                  {Object.keys(aggregates).length > 0 && <button className="text-[11px] text-primary hover:underline" onClick={() => setAggregates({})}>Clear all</button>}
                 </div>
-                <div className="mb-2 text-[10px] text-muted-foreground">
-                  Applied to each group footer and the grand total footer.
-                </div>
+                <div className="mb-2 text-[10px] text-muted-foreground">Applied to each group footer and the grand total footer.</div>
                 <ScrollArea className="h-64">
                   <div className="space-y-1.5 pr-2">
                     {allCols.map((c) => {
@@ -1470,17 +829,13 @@ const showAllCols = () => {
                             {ALL_AGGS.map((a) => {
                               const on = set.has(a);
                               return (
-                                <button
-                                  key={a}
-                                  onClick={() => setAggregates((prev) => {
-                                    const cur = new Set(prev[c] ?? []);
-                                    if (on) cur.delete(a); else cur.add(a);
-                                    const next = { ...prev };
-                                    if (cur.size) next[c] = cur; else delete next[c];
-                                    return next;
-                                  })}
-                                  className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${on ? "border-primary bg-primary text-primary-foreground" : "border-border text-muted-foreground hover:text-foreground"}`}
-                                >{AGG_LABEL[a]}</button>
+                                <button key={a} onClick={() => setAggregates((prev) => {
+                                  const cur = new Set(prev[c] ?? []);
+                                  if (on) cur.delete(a); else cur.add(a);
+                                  const next = { ...prev };
+                                  if (cur.size) next[c] = cur; else delete next[c];
+                                  return next;
+                                })} className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${on ? "border-primary bg-primary text-primary-foreground" : "border-border text-muted-foreground hover:text-foreground"}`}>{AGG_LABEL[a]}</button>
                               );
                             })}
                           </div>
@@ -1497,94 +852,44 @@ const showAllCols = () => {
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="sm" disabled={!resultCols.length}>
                   <Palette className="mr-1.5 h-3.5 w-3.5" /> Format
-                  {formatRules.length > 0 && (
-                    <Badge variant="secondary" className="ml-1.5 text-[10px]">{formatRules.length}</Badge>
-                  )}
+                  {formatRules.length > 0 && <Badge variant="secondary" className="ml-1.5 text-[10px]">{formatRules.length}</Badge>}
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="start" className="w-[420px] p-2">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-xs font-semibold">Conditional Formatting</span>
                   <div className="flex items-center gap-2">
-                    {formatRules.length > 0 && (
-                      <button className="text-[11px] text-primary hover:underline" onClick={() => setFormatRules([])}>Clear all</button>
-                    )}
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-6 text-[11px]"
-                      onClick={() => setFormatRules((rs) => [
-                        ...rs,
-                        {
-                          id: newId(),
-                          column: allCols[0] ?? "",
-                          op: ">",
-                          value: "",
-                          value2: "",
-                          bg: FMT_PRESETS[3].bg,
-                          fg: FMT_PRESETS[3].fg,
-                          bold: false,
-                        },
-                      ])}
-                    >
+                    {formatRules.length > 0 && <button className="text-[11px] text-primary hover:underline" onClick={() => setFormatRules([])}>Clear all</button>}
+                    <Button size="sm" variant="outline" className="h-6 text-[11px]" onClick={() => setFormatRules((rs) => [...rs, { id: newId(), column: allCols[0] ?? "", op: ">", value: "", value2: "", bg: FMT_PRESETS[3].bg, fg: FMT_PRESETS[3].fg, bold: false }])}>
                       <Plus className="mr-1 h-3 w-3" /> Add rule
                     </Button>
                   </div>
                 </div>
-                <div className="mb-2 text-[10px] text-muted-foreground">
-                  Rules highlight matching cells. Later rules override earlier ones. Client-side only.
-                </div>
+                <div className="mb-2 text-[10px] text-muted-foreground">Rules highlight matching cells. Later rules override earlier ones. Client-side only.</div>
                 <ScrollArea className="max-h-[360px]">
                   <div className="space-y-2 pr-2">
-                    {formatRules.length === 0 && (
-                      <div className="rounded border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
-                        No rules yet. Click "Add rule" to highlight cells by condition.
-                      </div>
-                    )}
+                    {formatRules.length === 0 && <div className="rounded border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">No rules yet. Click "Add rule" to highlight cells by condition.</div>}
                     {formatRules.map((r) => {
                       const opDef = FMT_OPS.find((o) => o.value === r.op) ?? FMT_OPS[0];
-                      const patch = (p: Partial<FormatRule>) =>
-                        setFormatRules((all) => all.map((x) => (x.id === r.id ? { ...x, ...p } : x)));
+                      const patch = (p: Partial<FormatRule>) => setFormatRules((all) => all.map((x) => (x.id === r.id ? { ...x, ...p } : x)));
                       const currentPresetIdx = FMT_PRESETS.findIndex((p) => p.bg === r.bg && p.fg === r.fg);
                       return (
                         <div key={r.id} className="rounded border border-border/60 bg-background/40 p-2">
                           <div className="mb-1.5 grid grid-cols-[1fr_120px_24px] items-center gap-1.5">
                             <Select value={r.column} onValueChange={(v) => patch({ column: v })}>
                               <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="Column" /></SelectTrigger>
-                              <SelectContent>
-                                {allCols.map((c) => (
-                                  <SelectItem key={c} value={c}>{c}</SelectItem>
-                                ))}
-                              </SelectContent>
+                              <SelectContent>{allCols.map((c) => <SelectItem key={c} value={c}>{c}</SelectItem>)}</SelectContent>
                             </Select>
                             <Select value={r.op} onValueChange={(v) => patch({ op: v as FmtOp })}>
                               <SelectTrigger className="h-7 text-xs"><SelectValue /></SelectTrigger>
-                              <SelectContent>
-                                {FMT_OPS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
-                              </SelectContent>
+                              <SelectContent>{FMT_OPS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent>
                             </Select>
-                            <button
-                              onClick={() => setFormatRules((all) => all.filter((x) => x.id !== r.id))}
-                              className="text-muted-foreground hover:text-destructive"
-                              title="Delete rule"
-                            ><X className="h-3.5 w-3.5" /></button>
+                            <button onClick={() => setFormatRules((all) => all.filter((x) => x.id !== r.id))} className="text-muted-foreground hover:text-destructive" title="Delete rule"><X className="h-3.5 w-3.5" /></button>
                           </div>
                           {opDef.needsValue && (
                             <div className="mb-1.5 flex items-center gap-1.5">
-                              <Input
-                                value={r.value}
-                                onChange={(e) => patch({ value: e.target.value })}
-                                placeholder="Value"
-                                className="h-7 flex-1 text-xs"
-                              />
-                              {opDef.needsValue2 && (
-                                <Input
-                                  value={r.value2}
-                                  onChange={(e) => patch({ value2: e.target.value })}
-                                  placeholder="and"
-                                  className="h-7 flex-1 text-xs"
-                                />
-                              )}
+                              <Input value={r.value} onChange={(e) => patch({ value: e.target.value })} placeholder="Value" className="h-7 flex-1 text-xs" />
+                              {opDef.needsValue2 && <Input value={r.value2} onChange={(e) => patch({ value2: e.target.value })} placeholder="and" className="h-7 flex-1 text-xs" />}
                             </div>
                           )}
                           <div className="flex items-center gap-1.5">
@@ -1593,19 +898,16 @@ const showAllCols = () => {
                               {FMT_PRESETS.map((p, idx) => {
                                 const active = idx === currentPresetIdx;
                                 return (
-                                  <button
-                                    key={p.label}
-                                    onClick={() => patch({ bg: p.bg, fg: p.fg })}
-                                    title={p.label}
+                                  <button key={p.label} onClick={() => patch({ bg: p.bg, fg: p.fg })} title={p.label}
                                     className={`h-5 w-8 rounded border text-[9px] font-semibold ${active ? "ring-2 ring-primary ring-offset-1 ring-offset-background" : "border-border"}`}
-                                    style={{ background: p.bg || "transparent", color: p.fg || undefined }}
-                                  >{p.label === "None" ? "—" : "Aa"}</button>
+                                    style={{ background: p.bg || "transparent", color: p.fg || undefined }}>
+                                    {p.label === "None" ? "—" : "Aa"}
+                                  </button>
                                 );
                               })}
                             </div>
                             <label className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground">
-                              <Checkbox checked={r.bold} onCheckedChange={(v) => patch({ bold: !!v })} />
-                              Bold
+                              <Checkbox checked={r.bold} onCheckedChange={(v) => patch({ bold: !!v })} /> Bold
                             </label>
                           </div>
                         </div>
@@ -1621,20 +923,13 @@ const showAllCols = () => {
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="sm" disabled={!resultCols.length}>
                   <Calculator className="mr-1.5 h-3.5 w-3.5" /> Calculated
-                  {calcCols.length > 0 && (
-                    <Badge variant="secondary" className="ml-1.5 text-[10px]">{calcCols.length}</Badge>
-                  )}
+                  {calcCols.length > 0 && <Badge variant="secondary" className="ml-1.5 text-[10px]">{calcCols.length}</Badge>}
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="start" className="w-96 p-2">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-xs font-semibold">Calculated Columns</span>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="h-6 text-[11px]"
-                    onClick={() => setCalcEditor({ id: null, name: "", expr: "" })}
-                  >
+                  <Button size="sm" variant="outline" className="h-6 text-[11px]" onClick={() => setCalcEditor({ id: null, name: "", expr: "" })}>
                     <Plus className="mr-1 h-3 w-3" /> New
                   </Button>
                 </div>
@@ -1642,25 +937,15 @@ const showAllCols = () => {
                   Client-side formulas. Wrap column names in [brackets] (e.g. [d1.CompanyCode]). Supports arithmetic (+ - * / ( ), numeric constants, 'strings') and comparisons (=, &lt;&gt;, !=, &lt;, &gt;, &lt;=, &gt;=) returning TRUE/FALSE.
                 </div>
                 {calcCols.length === 0 ? (
-                  <div className="rounded border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">
-                    No calculated columns yet.
-                  </div>
+                  <div className="rounded border border-dashed border-border px-3 py-4 text-center text-[11px] text-muted-foreground">No calculated columns yet.</div>
                 ) : (
                   <div className="space-y-1.5">
                     {calcCols.map((c) => (
                       <div key={c.id} className="rounded border border-border/60 bg-background/40 px-2 py-1.5">
                         <div className="flex items-center gap-1.5">
                           <span className="flex-1 truncate font-mono text-xs font-medium">{c.name}</span>
-                          <button
-                            onClick={() => setCalcEditor({ id: c.id, name: c.name, expr: c.expr })}
-                            className="text-muted-foreground hover:text-primary"
-                            title="Edit"
-                          ><Pencil className="h-3.5 w-3.5" /></button>
-                          <button
-                            onClick={() => setCalcCols((all) => all.filter((x) => x.id !== c.id))}
-                            className="text-muted-foreground hover:text-destructive"
-                            title="Delete"
-                          ><X className="h-3.5 w-3.5" /></button>
+                          <button onClick={() => setCalcEditor({ id: c.id, name: c.name, expr: c.expr })} className="text-muted-foreground hover:text-primary" title="Edit"><Pencil className="h-3.5 w-3.5" /></button>
+                          <button onClick={() => setCalcCols((all) => all.filter((x) => x.id !== c.id))} className="text-muted-foreground hover:text-destructive" title="Delete"><X className="h-3.5 w-3.5" /></button>
                         </div>
                         <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">= {c.expr}</div>
                       </div>
@@ -1670,85 +955,34 @@ const showAllCols = () => {
               </PopoverContent>
             </Popover>
 
-
-
-
-
+            {/* Column Chooser */}
             <Popover>
               <PopoverTrigger asChild>
                 <Button variant="ghost" size="sm" disabled={!resultCols.length}>
                   <Columns className="mr-1.5 h-3.5 w-3.5" /> Columns
-                  {hiddenCols.size > 0 && (
-                    <Badge variant="secondary" className="ml-1.5 text-[10px]">{hiddenCols.size} hidden</Badge>
-                  )}
+                  {hiddenCols.size > 0 && <Badge variant="secondary" className="ml-1.5 text-[10px]">{hiddenCols.size} hidden</Badge>}
                 </Button>
               </PopoverTrigger>
               <PopoverContent align="start" className="w-72 p-2">
-<div className="mb-2">
-
-  <div className="mb-2 flex items-center justify-between">
-    <span className="text-xs font-semibold">
-      Column Chooser
-    </span>
-
-    <button
-      className="text-[11px] text-primary hover:underline"
-      onClick={() => {
-        setHiddenCols(new Set());
-        setColOrder(allCols);
-        setColumnSearch("");
-      }}
-    >
-      Reset
-    </button>
-  </div>
-
-
-  <Input
-    value={columnSearch}
-    onChange={(e) => setColumnSearch(e.target.value)}
-    placeholder="Search columns..."
-    className="h-7 text-xs mb-2"
-  />
-
-
-  <div className="flex gap-1">
-    <Button
-      size="sm"
-      variant="outline"
-      className="h-6 text-[11px]"
-      onClick={hideAllCols}
-    >
-      Hide All
-    </Button>
-
-    <Button
-      size="sm"
-      variant="outline"
-      className="h-6 text-[11px]"
-      onClick={showAllCols}
-    >
-      Show All
-    </Button>
-  </div>
-</div>
+                <div className="mb-2">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-xs font-semibold">Column Chooser</span>
+                    <button className="text-[11px] text-primary hover:underline" onClick={() => { setHiddenCols(new Set()); setColOrder(allCols); setColumnSearch(""); }}>Reset</button>
+                  </div>
+                  <Input value={columnSearch} onChange={(e) => setColumnSearch(e.target.value)} placeholder="Search columns..." className="h-7 text-xs mb-2" />
+                  <div className="flex gap-1">
+                    <Button size="sm" variant="outline" className="h-6 text-[11px]" onClick={hideAllCols}>Hide All</Button>
+                    <Button size="sm" variant="outline" className="h-6 text-[11px]" onClick={showAllCols}>Show All</Button>
+                  </div>
+                </div>
                 <ScrollArea className="h-64">
                   <div className="space-y-1">
                     {filteredResultCols.map((c) => {
                       const hidden = hiddenCols.has(c);
                       return (
-                        <div
-                          key={c}
-                          className="flex items-center justify-between gap-2 rounded border border-border/50 bg-background/60 px-2 py-1 text-xs"
-                          draggable={hidden}
-                          onDragStart={hidden ? onHeaderDragStart(c) : undefined}
-                        >
+                        <div key={c} className="flex items-center justify-between gap-2 rounded border border-border/50 bg-background/60 px-2 py-1 text-xs" draggable={hidden} onDragStart={hidden ? onHeaderDragStart(c) : undefined}>
                           <span className="truncate font-mono">{c}</span>
-                          <button
-                            onClick={() => (hidden ? showCol(c) : hideCol(c))}
-                            className="text-muted-foreground hover:text-foreground"
-                            title={hidden ? "Show column" : "Hide column"}
-                          >
+                          <button onClick={() => (hidden ? showCol(c) : hideCol(c))} className="text-muted-foreground hover:text-foreground" title={hidden ? "Show column" : "Hide column"}>
                             {hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                           </button>
                         </div>
@@ -1756,9 +990,7 @@ const showAllCols = () => {
                     })}
                   </div>
                 </ScrollArea>
-                <div className="mt-2 text-[10px] text-muted-foreground">
-                  Drag hidden columns onto a grid header to restore. Drag grid headers to reorder.
-                </div>
+                <div className="mt-2 text-[10px] text-muted-foreground">Drag hidden columns onto a grid header to restore. Drag grid headers to reorder.</div>
               </PopoverContent>
             </Popover>
           </div>
@@ -1766,14 +998,13 @@ const showAllCols = () => {
             <span>Show</span>
             <Select value={String(pageSize)} onValueChange={(v) => { setPageSize(Number(v)); setPage(1); }}>
               <SelectTrigger className="h-7 w-[80px] text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {[25, 50, 100, 250, 500].map((n) => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
-              </SelectContent>
+              <SelectContent>{[25, 50, 100, 250, 500].map((n) => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}</SelectContent>
             </Select>
             <span>rows</span>
           </div>
         </div>
 
+        {/* Results table */}
         <div className="flex-1 overflow-auto">
           {resultRows.length === 0 ? (
             <div className="flex h-full items-center justify-center p-10 text-center text-sm text-muted-foreground">
@@ -1784,134 +1015,37 @@ const showAllCols = () => {
               <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur">
                 <tr className="border-b border-border text-left">
                   {visibleCols.map((c) => (
-                    <th
-                      key={c}
-                      draggable
-                      onDragStart={onHeaderDragStart(c)}
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={onHeaderDrop(c)}
+                    <th key={c} draggable onDragStart={onHeaderDragStart(c)} onDragOver={(e) => e.preventDefault()} onDrop={onHeaderDrop(c)}
                       style={{ width: colWidths[c] ?? 160, position: "relative" }}
-                      className="group px-3 py-2 font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground select-none"
-                    >
+                      className="group px-3 py-2 font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground select-none">
                       <div className="flex items-center gap-1">
                         <GripVertical className="h-3 w-3 opacity-40 group-hover:opacity-100 cursor-grab" />
-                        <button
-className="flex-1 text-left"
-onClick={() => {
- if (sortKey === c)
-   setSortDir(d=>d==="asc"?"desc":"asc");
- else {
-   setSortKey(c);
-   setSortDir("asc");
- }
-}}
->
-{c}
-</button>
-                        <Popover
-open={filterOpen===c}
-onOpenChange={(v)=>setFilterOpen(v?c:null)}
->
-
-<PopoverTrigger asChild>
-
-<button
-className="text-muted-foreground hover:text-primary"
->
-▼
-</button>
-
-</PopoverTrigger>
-
-
-<PopoverContent
-className="w-48 p-2"
->
-
-<div className="max-h-60 overflow-auto">
-
-{
-getColumnValues(c).map(v=>{
-
-const checked =
-columnFilters[c]?.has(v) ?? true;
-
-
-return (
-
-<label
-key={v}
-className="flex gap-2 text-xs"
->
-
-<Checkbox
-
-checked={checked}
-
-onCheckedChange={(x)=>{
-
-setColumnFilters(prev=>{
-
-const next =
-new Set(
- prev[c] ??
- getColumnValues(c)
-);
-
-
-if(x)
- next.add(v);
-else
- next.delete(v);
-
-
-return {
- ...prev,
- [c]:next
-};
-
-});
-
-}}
-
- />
-
-<span>{v}</span>
-
-
-</label>
-
-)
-
-})
-}
-
-</div>
-
-
-<Button
-
-size="sm"
-
-className="mt-2 w-full"
-
-onClick={()=>setFilterOpen(null)}
-
->
-Apply
-</Button>
-
-
-</PopoverContent>
-
-</Popover>
-
-
-</div>
-                      <span
-                        onMouseDown={startResize(c)}
-                        className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/40"
-                      />
+                        <button className="flex-1 text-left" onClick={() => { if (sortKey === c) setSortDir(d=>d==="asc"?"desc":"asc"); else { setSortKey(c); setSortDir("asc"); } }}>{c}</button>
+                        <Popover open={filterOpen===c} onOpenChange={(v)=>setFilterOpen(v?c:null)}>
+                          <PopoverTrigger asChild><button className="text-muted-foreground hover:text-primary">▼</button></PopoverTrigger>
+                          <PopoverContent className="w-48 p-2">
+                            <div className="max-h-60 overflow-auto">
+                              {(columnValuesCache[c] ?? []).map(v => {
+                                const checked = columnFilters[c]?.has(v) ?? true;
+                                return (
+                                  <label key={v} className="flex gap-2 text-xs">
+                                    <Checkbox checked={checked} onCheckedChange={(x) => {
+                                      setColumnFilters(prev => {
+                                        const next = new Set(prev[c] ?? (columnValuesCache[c] ?? []));
+                                        if (x) next.add(v); else next.delete(v);
+                                        return { ...prev, [c]: next };
+                                      });
+                                    }} />
+                                    <span>{v}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                            <Button size="sm" className="mt-2 w-full" onClick={() => setFilterOpen(null)}>Apply</Button>
+                          </PopoverContent>
+                        </Popover>
+                      </div>
+                      <span onMouseDown={startResize(c)} className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/40" />
                     </th>
                   ))}
                 </tr>
@@ -1924,11 +1058,8 @@ Apply
                         {visibleCols.map((c) => {
                           const fmt = styleForCell(c, r, formatRules);
                           return (
-                            <td
-                              key={c}
-                              style={{ width: colWidths[c] ?? 160, ...fmt.style }}
-                              className={`px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis ${fmt.bold ? "font-bold" : ""}`}
-                            >
+                            <td key={c} style={{ width: colWidths[c] ?? 160, ...fmt.style }}
+                              className={`px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis ${fmt.bold ? "font-bold" : ""}`}>
                               {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
                             </td>
                           );
@@ -1941,15 +1072,9 @@ Apply
                   <tr className="border-t-2 border-border font-semibold">
                     {visibleCols.map((c, idx) => {
                       const aggs = aggregates[c];
-                      const parts = aggs
-                        ? Array.from(aggs).map((a) => `${AGG_LABEL[a]}: ${fmtAgg(calcAgg(filteredRows, c, a))}`)
-                        : [];
+                      const parts = aggs ? Array.from(aggs).map((a) => `${AGG_LABEL[a]}: ${fmtAgg(calcAgg(filteredRows, c, a))}`) : [];
                       return (
-                        <td
-                          key={c}
-                          style={{ width: colWidths[c] ?? 160 }}
-                          className="px-3 py-1.5 text-[11px] whitespace-nowrap overflow-hidden text-ellipsis"
-                        >
+                        <td key={c} style={{ width: colWidths[c] ?? 160 }} className="px-3 py-1.5 text-[11px] whitespace-nowrap overflow-hidden text-ellipsis">
                           {idx === 0 && !parts.length ? "Grand Total" : parts.join("  ·  ")}
                         </td>
                       );
@@ -1960,7 +1085,6 @@ Apply
             </table>
           )}
         </div>
-
 
         {resultRows.length > 0 && (
           <div className="flex items-center justify-between border-t border-border bg-card/30 px-4 py-2 text-xs">
@@ -1977,75 +1101,49 @@ Apply
             )}
           </div>
         )}
-
       </main>
 
       {/* Load dialog */}
       <Dialog open={loadOpen} onOpenChange={setLoadOpen}>
         <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>Saved Queries</DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>Saved Queries</DialogTitle></DialogHeader>
           <div className="max-h-[60vh] overflow-auto">
-            {savedList.length === 0 && (
-              <div className="py-6 text-center text-sm text-muted-foreground">No saved queries.</div>
-            )}
+            {savedList.length === 0 && <div className="py-6 text-center text-sm text-muted-foreground">No saved queries.</div>}
             {savedList.map((q) => (
               <div key={q.name} className="flex items-center justify-between rounded border border-border bg-background/60 px-3 py-2 mb-1.5">
                 <div>
                   <div className="text-sm font-medium">{q.name}</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    {q.spec.tables.length} table(s), {q.spec.conditions.length} condition(s) ·{" "}
-                    {new Date(q.savedAt).toLocaleString()}
-                  </div>
+                  <div className="text-[11px] text-muted-foreground">{q.spec.tables.length} table(s), {q.spec.conditions.length} condition(s) · {new Date(q.savedAt).toLocaleString()}</div>
                 </div>
                 <div className="flex gap-1">
                   <Button size="sm" onClick={() => applySaved(q)}>Load</Button>
-                  <Button size="sm" variant="outline" onClick={() => deleteSaved(q.name)}>
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => deleteSaved(q.name)}><Trash2 className="h-3.5 w-3.5" /></Button>
                 </div>
               </div>
             ))}
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setLoadOpen(false)}>Close</Button>
-          </DialogFooter>
+          <DialogFooter><Button variant="outline" onClick={() => setLoadOpen(false)}>Close</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 
       {/* Calculated column editor */}
       <Dialog open={!!calcEditor} onOpenChange={(v) => !v && setCalcEditor(null)}>
         <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>{calcEditor?.id ? "Edit Calculated Column" : "New Calculated Column"}</DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>{calcEditor?.id ? "Edit Calculated Column" : "New Calculated Column"}</DialogTitle></DialogHeader>
           {calcEditor && (
             <div className="space-y-3">
               <div>
                 <Label className="mb-1 block text-xs">Column Name</Label>
-                <Input
-                  value={calcEditor.name}
-                  onChange={(e) => setCalcEditor((s) => s ? { ...s, name: e.target.value } : s)}
-                  placeholder="e.g. NetTotal"
-                  className="h-8 text-xs font-mono"
-                />
+                <Input value={calcEditor.name} onChange={(e) => setCalcEditor((s) => s ? { ...s, name: e.target.value } : s)} placeholder="e.g. NetTotal" className="h-8 text-xs font-mono" />
               </div>
               <div>
                 <Label className="mb-1 block text-xs">Expression</Label>
-                <Input
-                  value={calcEditor.expr}
-                  onChange={(e) => setCalcEditor((s) => s ? { ...s, expr: e.target.value, error: undefined } : s)}
-                  placeholder="e.g. (Price * Qty) - Discount"
-                  className="h-8 text-xs font-mono"
-                />
+                <Input value={calcEditor.expr} onChange={(e) => setCalcEditor((s) => s ? { ...s, expr: e.target.value, error: undefined } : s)} placeholder="e.g. (Price * Qty) - Discount" className="h-8 text-xs font-mono" />
                 <div className="mt-1 text-[10px] text-muted-foreground">
                   Reference source columns by name. Wrap names containing spaces or dots in [brackets] (e.g. [Total Amount]).
-                  Supports + − × ÷ and parentheses. Result is numeric only.
+                  Supports + − × ÷, parentheses, 'strings', and comparisons (=, &lt;&gt;, !=, &lt;, &gt;, &lt;=, &gt;=) returning TRUE/FALSE.
                 </div>
-                {calcEditor.error && (
-                  <div className="mt-1 text-[11px] text-destructive">{calcEditor.error}</div>
-                )}
+                {calcEditor.error && <div className="mt-1 text-[11px] text-destructive">{calcEditor.error}</div>}
               </div>
               {resultCols.length > 0 && (
                 <div>
@@ -2053,16 +1151,12 @@ Apply
                   <div className="max-h-28 overflow-auto rounded border border-border/60 bg-background/40 p-1.5">
                     <div className="flex flex-wrap gap-1">
                       {resultCols.map((c) => (
-                        <button
-                          key={c}
-                          onClick={() => setCalcEditor((s) => {
-                            if (!s) return s;
-                            const token = /[^A-Za-z0-9_]/.test(c) ? `[${c}]` : c;
-                            const sep = s.expr && !/[\s(+\-*/]$/.test(s.expr) ? " " : "";
-                            return { ...s, expr: s.expr + sep + token, error: undefined };
-                          })}
-                          className="rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[10px] hover:bg-accent"
-                        >{c}</button>
+                        <button key={c} onClick={() => setCalcEditor((s) => {
+                          if (!s) return s;
+                          const token = /[^A-Za-z0-9_]/.test(c) ? `[${c}]` : c;
+                          const sep = s.expr && !/[\s(+\-*/]$/.test(s.expr) ? " " : "";
+                          return { ...s, expr: s.expr + sep + token, error: undefined };
+                        })} className="rounded border border-border bg-background px-1.5 py-0.5 font-mono text-[10px] hover:bg-accent">{c}</button>
                       ))}
                     </div>
                   </div>
@@ -2072,40 +1166,25 @@ Apply
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setCalcEditor(null)}>Cancel</Button>
-            <Button
-              onClick={() => {
-                if (!calcEditor) return;
-                const name = calcEditor.name.trim();
-                if (!name) { setCalcEditor((s) => s ? { ...s, error: "Name is required" } : s); return; }
-                if (!/^[A-Za-z_][A-Za-z0-9_ ]*$/.test(name)) {
-                  setCalcEditor((s) => s ? { ...s, error: "Name must start with a letter and use letters/digits/underscores/spaces" } : s);
-                  return;
-                }
-                if (resultCols.includes(name) && !calcEditor.id) {
-                  setCalcEditor((s) => s ? { ...s, error: "Name conflicts with an existing result column" } : s);
-                  return;
-                }
-                if (calcCols.some((c) => c.name === name && c.id !== calcEditor.id)) {
-                  setCalcEditor((s) => s ? { ...s, error: "Another calculated column already has this name" } : s);
-                  return;
-                }
-                const check = validateCalcExpr(calcEditor.expr, [...resultCols, ...calcCols.filter((c) => c.id !== calcEditor.id).map((c) => c.name)]);
-                if (!check.ok) { setCalcEditor((s) => s ? { ...s, error: check.error } : s); return; }
-                setCalcCols((all) => {
-                  if (calcEditor.id) return all.map((c) => c.id === calcEditor.id ? { ...c, name, expr: calcEditor.expr } : c);
-                  return [...all, { id: newId(), name, expr: calcEditor.expr }];
-                });
-                setCalcEditor(null);
-                toast.success(calcEditor.id ? "Calculated column updated" : "Calculated column added");
-              }}
-            >Save</Button>
+            <Button onClick={() => {
+              if (!calcEditor) return;
+              const name = calcEditor.name.trim();
+              if (!name) { setCalcEditor((s) => s ? { ...s, error: "Name is required" } : s); return; }
+              if (!/^[A-Za-z_][A-Za-z0-9_ ]*$/.test(name)) { setCalcEditor((s) => s ? { ...s, error: "Name must start with a letter and use letters/digits/underscores/spaces" } : s); return; }
+              if (resultCols.includes(name) && !calcEditor.id) { setCalcEditor((s) => s ? { ...s, error: "Name conflicts with an existing result column" } : s); return; }
+              if (calcCols.some((c) => c.name === name && c.id !== calcEditor.id)) { setCalcEditor((s) => s ? { ...s, error: "Another calculated column already has this name" } : s); return; }
+              const check = validateCalcExpr(calcEditor.expr, [...resultCols, ...calcCols.filter((c) => c.id !== calcEditor.id).map((c) => c.name)]);
+              if (!check.ok) { setCalcEditor((s) => s ? { ...s, error: check.error } : s); return; }
+              setCalcCols((all) => {
+                if (calcEditor.id) return all.map((c) => (c.id === calcEditor.id ? { ...c, name, expr: calcEditor.expr } : c));
+                return [...all, { id: newId(), name, expr: calcEditor.expr }];
+              });
+              setCalcEditor(null);
+              toast.success(calcEditor.id ? "Calculated column updated" : "Calculated column added");
+            }}>Save</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>
-
   );
 }
-
-// Unused import guard so eslint doesn't complain about ColumnInfo type.
-export type _ColumnInfo = ColumnInfo;
