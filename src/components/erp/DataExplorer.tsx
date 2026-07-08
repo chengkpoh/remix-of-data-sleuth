@@ -451,25 +451,36 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
 
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
 
-  const columnValuesCache = useMemo(() => {
-    const cache: Record<string, string[]> = {};
-    for (const c of allCols) {
-      const set = new Set<string>();
-      for (const r of augmentedRows) { set.add(String(r[c] ?? "")); }
-      cache[c] = Array.from(set).sort();
+  // Lazy per-column distinct values — only compute for the currently-open filter popover.
+  // Cap at DISTINCT_CAP so a 50k-row column doesn't build a giant list.
+  const DISTINCT_CAP = 1000;
+  const openFilterValues = useMemo<{ values: string[]; capped: boolean }>(() => {
+    if (!filterOpen) return { values: [], capped: false };
+    const set = new Set<string>();
+    for (const r of augmentedRows) {
+      set.add(String(r[filterOpen] ?? ""));
+      if (set.size >= DISTINCT_CAP) break;
     }
-    return cache;
-  }, [augmentedRows, allCols]);
+    return { values: Array.from(set).sort(), capped: set.size >= DISTINCT_CAP };
+  }, [filterOpen, augmentedRows]);
 
   const copyResults = async () => {
     if (!augmentedRows.length) { toast.error("Nothing to copy."); return; }
-    const text = [
-      allCols.join("\t"),
-      ...augmentedRows.map((r) => allCols.map((c) => (r[c] == null ? "" : String(r[c]))).join("\t")),
-    ].join("\n");
-    await navigator.clipboard.writeText(text);
-    toast.success("Copied to clipboard");
+    // Chunk the join to keep the main thread responsive on 50k+ rows.
+    const parts: string[] = [allCols.join("\t")];
+    const CHUNK = 5000;
+    for (let i = 0; i < augmentedRows.length; i += CHUNK) {
+      const end = Math.min(i + CHUNK, augmentedRows.length);
+      for (let j = i; j < end; j++) {
+        const r = augmentedRows[j];
+        parts.push(allCols.map((c) => (r[c] == null ? "" : String(r[c]))).join("\t"));
+      }
+      if (end < augmentedRows.length) await new Promise((res) => setTimeout(res, 0));
+    }
+    await navigator.clipboard.writeText(parts.join("\n"));
+    toast.success(`Copied ${augmentedRows.length} row(s) to clipboard`);
   };
+
 
   const hideAllCols = () => setHiddenCols(new Set(allCols));
   const showAllCols = () => setHiddenCols(new Set());
