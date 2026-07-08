@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState, useDeferredValue } from "react";
+import { useEffect, useMemo, useRef, useState, useDeferredValue, startTransition } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Play, Save, FolderOpen, Trash2, Copy, Plus, X, Table as TableIcon, Loader2, Link2,
   Columns, Eye, EyeOff, GripVertical, FileCode2, Layers, Sigma, ChevronRight, ChevronDown,
-  Palette, Calculator, Pencil,
+  Palette, Calculator, Pencil, AlertTriangle, XCircle,
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
