@@ -444,12 +444,22 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
     return rows;
   }, [sortedRows, columnFilters]);
 
+  // Legacy paging kept only for the (currently-unused) grouped path fallback.
   const pageRows = useMemo(() => {
     const start = (page - 1) * pageSize;
     return filteredRows.slice(start, start + pageSize);
   }, [filteredRows, page, pageSize]);
-
+  void pageRows;
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  void totalPages;
+
+  // Row virtualizer — only used when NOT grouping. Fixed row height for speed.
+  const rowVirtualizer = useVirtualizer({
+    count: filteredRows.length,
+    getScrollElement: () => gridScrollRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 15,
+  });
 
   // Lazy per-column distinct values — only compute for the currently-open filter popover.
   // Cap at DISTINCT_CAP so a 50k-row column doesn't build a giant list.
