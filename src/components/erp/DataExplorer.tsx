@@ -868,11 +868,40 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
           )}
         </div>
 
+        {/* Streaming banners */}
+        {(status === "running" || selectAllBanner || (received >= LARGE_ROW_THRESHOLD && !largeResultAck && status === "running")) && (
+          <div className="border-b border-border bg-muted/30 px-4 py-1.5 text-[11px] space-y-1">
+            {status === "running" && (
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                <span>Received <b>{received.toLocaleString()}</b> row(s)…</span>
+                <Button size="sm" variant="outline" className="ml-auto h-6 text-[11px]" onClick={cancelQuery}>
+                  <XCircle className="h-3 w-3 mr-1" /> Cancel
+                </Button>
+              </div>
+            )}
+            {selectAllBanner && (
+              <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                <span>Query returned <b>{selectAllBanner.total}</b> columns — showing first {selectAllBanner.shown}. Open <b>Columns</b> to change.</span>
+                <button onClick={() => setSelectAllBanner(null)} className="ml-auto text-muted-foreground hover:text-foreground"><X className="h-3.5 w-3.5" /></button>
+              </div>
+            )}
+            {status === "running" && received >= LARGE_ROW_THRESHOLD && !largeResultAck && (
+              <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                <span>Large result — {received.toLocaleString()}+ rows. Consider cancelling and adding a filter or LIMIT.</span>
+                <Button size="sm" variant="outline" className="ml-auto h-6 text-[11px]" onClick={() => setLargeResultAck(true)}>Continue</Button>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Results toolbar */}
         <div className="flex items-center justify-between border-b border-border bg-background px-4 py-2 text-xs">
           <div className="flex items-center gap-3">
             <span className="font-semibold">Results</span>
-            {isStale && (
+            {isStale && status !== "running" && (
               <span className="flex items-center gap-1 text-[11px] text-primary">
                 <Loader2 className="h-3 w-3 animate-spin" /> Processing…
               </span>
