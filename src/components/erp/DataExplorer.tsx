@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { getErp } from "@/lib/erp/client";
+import { getDefaultQuerySource, type QuerySource } from "@/lib/erp/queryRunner";
 import ResultExportMenu from "./ResultExportMenu";
 import ImportScriptPanel from "./ImportScriptPanel";
 import {
