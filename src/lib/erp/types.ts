@@ -170,7 +170,12 @@ export interface DataExplorerSpec {
   orderBy?: DataExplorerOrderBy[];
   windowFunctions?: DataExplorerWindowFunction[];
   distinct?: boolean;
-  rawSql?: string; 
+  rawSql?: string;
+  /** Reserved for future server-side paging (Option C). Ignored by the current backend. */
+  serverSort?: { column: string; direction: "asc" | "desc" }[];
+  serverFilter?: Record<string, string[]>;
+  serverGroupBy?: string[];
+  page?: { offset: number; limit: number };
 }
 
 export interface DataExplorerResult {
