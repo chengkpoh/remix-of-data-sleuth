@@ -234,9 +234,16 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
     setExtRawSql((spec as any).rawSql);
   };
 
-  const runQuery = async (overrideSpec?: DataExplorerSpec) => {
-    const erp = getErp();
-    if (!erp?.runDataExplorerQuery) {
+  const flushRowBuffer = () => {
+    if (rowsBufRef.current.length === 0) return;
+    const chunk = rowsBufRef.current;
+    rowsBufRef.current = [];
+    startTransition(() => setResultRows((prev) => (prev.length ? prev.concat(chunk) : chunk)));
+  };
+
+  const runQuery = (overrideSpec?: DataExplorerSpec) => {
+    const source = querySourceRef.current;
+    if (!source) {
       toast.error("Data Explorer requires the Electron desktop build.");
       return;
     }
@@ -245,33 +252,103 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
       toast.error("Select at least one table.");
       return;
     }
-    setRunning(true);
-    try {
-      const res = await erp.runDataExplorerQuery(spec);
-      const cols = res.columns.length ? res.columns : (res.rows[0] ? Object.keys(res.rows[0]) : []);
-      setResultCols(cols);
-      const calcNames = calcCols.map((c) => c.name);
-      setColOrder([...cols, ...calcNames.filter((n) => !cols.includes(n))]);
-      setHiddenCols(new Set());
-      setColWidths({});
-      setResultRows(res.rows);
-      setPage(1);
-      setCollapsedGroups(new Set());
-      const known = new Set([...cols, ...calcNames]);
-      setGroupBy((g) => g.filter((c) => known.has(c)));
-      setAggregates((a) => {
-        const next: Record<string, Set<Agg>> = {};
-        for (const k of Object.keys(a)) if (known.has(k)) next[k] = a[k];
-        return next;
-      });
-      setFormatRules((rs) => rs.filter((r) => known.has(r.column)));
-      toast.success(`${res.rows.length} row(s) in ${res.durationMs}ms`);
-    } catch (e) {
-      toast.error(`Query failed: ${(e as Error).message}`);
-    } finally {
-      setRunning(false);
+    // Cancel any query already in flight.
+    cancelRef.current?.();
+    if (flushTimerRef.current != null) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
     }
+    rowsBufRef.current = [];
+    setResultRows([]);
+    setResultCols([]);
+    setReceived(0);
+    setQueryDurationMs(null);
+    setSelectAllBanner(null);
+    setLargeResultAck(false);
+    setStatus("running");
+    setRunning(true);
+    setColumnFilters({});
+    setSortKey(null);
+
+    const isSelectStar = !spec.rawSql && (!spec.selectColumns || !spec.selectColumns.length);
+
+    cancelRef.current = source.run(spec, {
+      onStart: ({ columns }) => {
+        const calcNames = calcCols.map((c) => c.name);
+        setResultCols(columns);
+        setColOrder([...columns, ...calcNames.filter((n) => !columns.includes(n))]);
+        if (isSelectStar && columns.length > AUTO_HIDE_COL_THRESHOLD) {
+          setHiddenCols(new Set(columns.slice(AUTO_SHOW_COL_COUNT)));
+          setSelectAllBanner({ total: columns.length, shown: AUTO_SHOW_COL_COUNT });
+        } else {
+          setHiddenCols(new Set());
+        }
+        setColWidths({});
+        setPage(1);
+        setCollapsedGroups(new Set());
+        const known = new Set([...columns, ...calcNames]);
+        setGroupBy((g) => g.filter((c) => known.has(c)));
+        setAggregates((a) => {
+          const next: Record<string, Set<Agg>> = {};
+          for (const k of Object.keys(a)) if (known.has(k)) next[k] = a[k];
+          return next;
+        });
+        setFormatRules((rs) => rs.filter((r) => known.has(r.column)));
+      },
+      onBatch: ({ rows, received: total }) => {
+        rowsBufRef.current.push(...rows);
+        setReceived(total);
+        if (flushTimerRef.current == null) {
+          flushTimerRef.current = window.setTimeout(() => {
+            flushTimerRef.current = null;
+            flushRowBuffer();
+          }, 200);
+        }
+      },
+      onDone: ({ totalRows, durationMs }) => {
+        if (flushTimerRef.current != null) {
+          clearTimeout(flushTimerRef.current);
+          flushTimerRef.current = null;
+        }
+        flushRowBuffer();
+        setQueryDurationMs(durationMs);
+        setStatus("done");
+        setRunning(false);
+        cancelRef.current = null;
+        toast.success(`${totalRows} row(s) in ${durationMs}ms`);
+      },
+      onError: ({ message }) => {
+        if (flushTimerRef.current != null) {
+          clearTimeout(flushTimerRef.current);
+          flushTimerRef.current = null;
+        }
+        flushRowBuffer();
+        setStatus("error");
+        setRunning(false);
+        cancelRef.current = null;
+        toast.error(`Query failed: ${message}`);
+      },
+    });
   };
+
+  const cancelQuery = () => {
+    cancelRef.current?.();
+    cancelRef.current = null;
+    if (flushTimerRef.current != null) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    flushRowBuffer();
+    setStatus("cancelled");
+    setRunning(false);
+    toast.info("Query cancelled — keeping rows received so far.");
+  };
+
+  useEffect(() => () => {
+    cancelRef.current?.();
+    if (flushTimerRef.current != null) clearTimeout(flushTimerRef.current);
+  }, []);
+
 
   const clearAll = () => {
     clearSelectedTables();
