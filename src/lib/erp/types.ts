@@ -59,6 +59,11 @@ export interface SearchProgress {
   warning?: string;
 }
 
+export interface DataExplorerStartEvent { reqId: string; columns: string[]; sql: string }
+export interface DataExplorerBatchEvent { reqId: string; rows: Record<string, unknown>[]; received: number }
+export interface DataExplorerDoneEvent { reqId: string; totalRows: number; durationMs: number }
+export interface DataExplorerErrorEvent { reqId: string; message: string }
+
 export interface ErpApi {
   isElectron: boolean;
   test: (cfg: ConnectionConfig) => Promise<{ ok: boolean; error?: string }>;
@@ -94,6 +99,13 @@ export interface ErpApi {
   }>;
   getForeignKeys: () => Promise<ForeignKeyInfo[]>;
   runDataExplorerQuery: (spec: DataExplorerSpec) => Promise<DataExplorerResult>;
+
+  // Streaming Data Explorer (Electron main → renderer). Optional so older builds still typecheck.
+  streamDataExplorerQuery?: (reqId: string, spec: DataExplorerSpec) => void;
+  onDataExplorerStart?: (cb: (e: DataExplorerStartEvent) => void) => () => void;
+  onDataExplorerBatch?: (cb: (e: DataExplorerBatchEvent) => void) => () => void;
+  onDataExplorerDone?: (cb: (e: DataExplorerDoneEvent) => void) => () => void;
+  onDataExplorerError?: (cb: (e: DataExplorerErrorEvent) => void) => () => void;
 }
 
 export interface ForeignKeyInfo {
@@ -158,7 +170,12 @@ export interface DataExplorerSpec {
   orderBy?: DataExplorerOrderBy[];
   windowFunctions?: DataExplorerWindowFunction[];
   distinct?: boolean;
-  rawSql?: string; 
+  rawSql?: string;
+  /** Reserved for future server-side paging (Option C). Ignored by the current backend. */
+  serverSort?: { column: string; direction: "asc" | "desc" }[];
+  serverFilter?: Record<string, string[]>;
+  serverGroupBy?: string[];
+  page?: { offset: number; limit: number };
 }
 
 export interface DataExplorerResult {

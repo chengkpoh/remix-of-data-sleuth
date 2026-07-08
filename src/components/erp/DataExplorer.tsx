@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState, useDeferredValue } from "react";
+import { useEffect, useMemo, useRef, useState, useDeferredValue, startTransition } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Play, Save, FolderOpen, Trash2, Copy, Plus, X, Table as TableIcon, Loader2, Link2,
   Columns, Eye, EyeOff, GripVertical, FileCode2, Layers, Sigma, ChevronRight, ChevronDown,
-  Palette, Calculator, Pencil,
+  Palette, Calculator, Pencil, AlertTriangle, XCircle,
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
@@ -19,6 +20,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { getErp } from "@/lib/erp/client";
+import { getDefaultQuerySource, type QuerySource } from "@/lib/erp/queryRunner";
 import ResultExportMenu from "./ResultExportMenu";
 import ImportScriptPanel from "./ImportScriptPanel";
 import {
@@ -70,6 +72,28 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
   const [pageSize, setPageSize] = useState(100);
   const dragColRef = useRef<string | null>(null);
   const resizeRef = useRef<{ col: string; startX: number; startW: number } | null>(null);
+
+  // Streaming state — replaces the old one-shot `running` flow.
+  type QueryStatus = "idle" | "running" | "done" | "error" | "cancelled";
+  const [status, setStatus] = useState<QueryStatus>("idle");
+  const [received, setReceived] = useState(0);
+  const [queryDurationMs, setQueryDurationMs] = useState<number | null>(null);
+  const querySourceRef = useRef<QuerySource | null>(null);
+  if (querySourceRef.current === null) querySourceRef.current = getDefaultQuerySource();
+  const cancelRef = useRef<null | (() => void)>(null);
+  const rowsBufRef = useRef<Record<string, unknown>[]>([]);
+  const flushTimerRef = useRef<number | null>(null);
+
+  // SELECT * safeguards
+  const AUTO_HIDE_COL_THRESHOLD = 25;
+  const AUTO_SHOW_COL_COUNT = 20;
+  const LARGE_ROW_THRESHOLD = 25000;
+  const [selectAllBanner, setSelectAllBanner] = useState<{ total: number; shown: number } | null>(null);
+  const [largeResultAck, setLargeResultAck] = useState(false);
+
+  // Virtualization
+  const gridScrollRef = useRef<HTMLDivElement | null>(null);
+  const ROW_HEIGHT = 28;
 
   const [loadOpen, setLoadOpen] = useState(false);
   const [savedList, setSavedList] = useState<SavedQuery[]>([]);
@@ -210,9 +234,16 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
     setExtRawSql((spec as any).rawSql);
   };
 
-  const runQuery = async (overrideSpec?: DataExplorerSpec) => {
-    const erp = getErp();
-    if (!erp?.runDataExplorerQuery) {
+  const flushRowBuffer = () => {
+    if (rowsBufRef.current.length === 0) return;
+    const chunk = rowsBufRef.current;
+    rowsBufRef.current = [];
+    startTransition(() => setResultRows((prev) => (prev.length ? prev.concat(chunk) : chunk)));
+  };
+
+  const runQuery = (overrideSpec?: DataExplorerSpec) => {
+    const source = querySourceRef.current;
+    if (!source) {
       toast.error("Data Explorer requires the Electron desktop build.");
       return;
     }
@@ -221,33 +252,103 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
       toast.error("Select at least one table.");
       return;
     }
-    setRunning(true);
-    try {
-      const res = await erp.runDataExplorerQuery(spec);
-      const cols = res.columns.length ? res.columns : (res.rows[0] ? Object.keys(res.rows[0]) : []);
-      setResultCols(cols);
-      const calcNames = calcCols.map((c) => c.name);
-      setColOrder([...cols, ...calcNames.filter((n) => !cols.includes(n))]);
-      setHiddenCols(new Set());
-      setColWidths({});
-      setResultRows(res.rows);
-      setPage(1);
-      setCollapsedGroups(new Set());
-      const known = new Set([...cols, ...calcNames]);
-      setGroupBy((g) => g.filter((c) => known.has(c)));
-      setAggregates((a) => {
-        const next: Record<string, Set<Agg>> = {};
-        for (const k of Object.keys(a)) if (known.has(k)) next[k] = a[k];
-        return next;
-      });
-      setFormatRules((rs) => rs.filter((r) => known.has(r.column)));
-      toast.success(`${res.rows.length} row(s) in ${res.durationMs}ms`);
-    } catch (e) {
-      toast.error(`Query failed: ${(e as Error).message}`);
-    } finally {
-      setRunning(false);
+    // Cancel any query already in flight.
+    cancelRef.current?.();
+    if (flushTimerRef.current != null) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
     }
+    rowsBufRef.current = [];
+    setResultRows([]);
+    setResultCols([]);
+    setReceived(0);
+    setQueryDurationMs(null);
+    setSelectAllBanner(null);
+    setLargeResultAck(false);
+    setStatus("running");
+    setRunning(true);
+    setColumnFilters({});
+    setSortKey(null);
+
+    const isSelectStar = !spec.rawSql && (!spec.selectColumns || !spec.selectColumns.length);
+
+    cancelRef.current = source.run(spec, {
+      onStart: ({ columns }) => {
+        const calcNames = calcCols.map((c) => c.name);
+        setResultCols(columns);
+        setColOrder([...columns, ...calcNames.filter((n) => !columns.includes(n))]);
+        if (isSelectStar && columns.length > AUTO_HIDE_COL_THRESHOLD) {
+          setHiddenCols(new Set(columns.slice(AUTO_SHOW_COL_COUNT)));
+          setSelectAllBanner({ total: columns.length, shown: AUTO_SHOW_COL_COUNT });
+        } else {
+          setHiddenCols(new Set());
+        }
+        setColWidths({});
+        setPage(1);
+        setCollapsedGroups(new Set());
+        const known = new Set([...columns, ...calcNames]);
+        setGroupBy((g) => g.filter((c) => known.has(c)));
+        setAggregates((a) => {
+          const next: Record<string, Set<Agg>> = {};
+          for (const k of Object.keys(a)) if (known.has(k)) next[k] = a[k];
+          return next;
+        });
+        setFormatRules((rs) => rs.filter((r) => known.has(r.column)));
+      },
+      onBatch: ({ rows, received: total }) => {
+        rowsBufRef.current.push(...rows);
+        setReceived(total);
+        if (flushTimerRef.current == null) {
+          flushTimerRef.current = window.setTimeout(() => {
+            flushTimerRef.current = null;
+            flushRowBuffer();
+          }, 200);
+        }
+      },
+      onDone: ({ totalRows, durationMs }) => {
+        if (flushTimerRef.current != null) {
+          clearTimeout(flushTimerRef.current);
+          flushTimerRef.current = null;
+        }
+        flushRowBuffer();
+        setQueryDurationMs(durationMs);
+        setStatus("done");
+        setRunning(false);
+        cancelRef.current = null;
+        toast.success(`${totalRows} row(s) in ${durationMs}ms`);
+      },
+      onError: ({ message }) => {
+        if (flushTimerRef.current != null) {
+          clearTimeout(flushTimerRef.current);
+          flushTimerRef.current = null;
+        }
+        flushRowBuffer();
+        setStatus("error");
+        setRunning(false);
+        cancelRef.current = null;
+        toast.error(`Query failed: ${message}`);
+      },
+    });
   };
+
+  const cancelQuery = () => {
+    cancelRef.current?.();
+    cancelRef.current = null;
+    if (flushTimerRef.current != null) {
+      clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    flushRowBuffer();
+    setStatus("cancelled");
+    setRunning(false);
+    toast.info("Query cancelled — keeping rows received so far.");
+  };
+
+  useEffect(() => () => {
+    cancelRef.current?.();
+    if (flushTimerRef.current != null) clearTimeout(flushTimerRef.current);
+  }, []);
+
 
   const clearAll = () => {
     clearSelectedTables();
@@ -343,32 +444,53 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
     return rows;
   }, [sortedRows, columnFilters]);
 
+  // Legacy paging kept only for the (currently-unused) grouped path fallback.
   const pageRows = useMemo(() => {
     const start = (page - 1) * pageSize;
     return filteredRows.slice(start, start + pageSize);
   }, [filteredRows, page, pageSize]);
-
+  void pageRows;
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  void totalPages;
 
-  const columnValuesCache = useMemo(() => {
-    const cache: Record<string, string[]> = {};
-    for (const c of allCols) {
-      const set = new Set<string>();
-      for (const r of augmentedRows) { set.add(String(r[c] ?? "")); }
-      cache[c] = Array.from(set).sort();
+  // Row virtualizer — only used when NOT grouping. Fixed row height for speed.
+  const rowVirtualizer = useVirtualizer({
+    count: filteredRows.length,
+    getScrollElement: () => gridScrollRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 15,
+  });
+
+  // Lazy per-column distinct values — only compute for the currently-open filter popover.
+  // Cap at DISTINCT_CAP so a 50k-row column doesn't build a giant list.
+  const DISTINCT_CAP = 1000;
+  const openFilterValues = useMemo<{ values: string[]; capped: boolean }>(() => {
+    if (!filterOpen) return { values: [], capped: false };
+    const set = new Set<string>();
+    for (const r of augmentedRows) {
+      set.add(String(r[filterOpen] ?? ""));
+      if (set.size >= DISTINCT_CAP) break;
     }
-    return cache;
-  }, [augmentedRows, allCols]);
+    return { values: Array.from(set).sort(), capped: set.size >= DISTINCT_CAP };
+  }, [filterOpen, augmentedRows]);
 
   const copyResults = async () => {
     if (!augmentedRows.length) { toast.error("Nothing to copy."); return; }
-    const text = [
-      allCols.join("\t"),
-      ...augmentedRows.map((r) => allCols.map((c) => (r[c] == null ? "" : String(r[c]))).join("\t")),
-    ].join("\n");
-    await navigator.clipboard.writeText(text);
-    toast.success("Copied to clipboard");
+    // Chunk the join to keep the main thread responsive on 50k+ rows.
+    const parts: string[] = [allCols.join("\t")];
+    const CHUNK = 5000;
+    for (let i = 0; i < augmentedRows.length; i += CHUNK) {
+      const end = Math.min(i + CHUNK, augmentedRows.length);
+      for (let j = i; j < end; j++) {
+        const r = augmentedRows[j];
+        parts.push(allCols.map((c) => (r[c] == null ? "" : String(r[c]))).join("\t"));
+      }
+      if (end < augmentedRows.length) await new Promise((res) => setTimeout(res, 0));
+    }
+    await navigator.clipboard.writeText(parts.join("\n"));
+    toast.success(`Copied ${augmentedRows.length} row(s) to clipboard`);
   };
+
 
   const hideAllCols = () => setHiddenCols(new Set(allCols));
   const showAllCols = () => setHiddenCols(new Set());
@@ -756,11 +878,40 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
           )}
         </div>
 
+        {/* Streaming banners */}
+        {(status === "running" || selectAllBanner) && (
+          <div className="border-b border-border bg-muted/30 px-4 py-1.5 text-[11px] space-y-1">
+            {status === "running" && (
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                <span>Received <b>{received.toLocaleString()}</b> row(s)…</span>
+                <Button size="sm" variant="outline" className="ml-auto h-6 text-[11px]" onClick={cancelQuery}>
+                  <XCircle className="h-3 w-3 mr-1" /> Cancel
+                </Button>
+              </div>
+            )}
+            {selectAllBanner && (
+              <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                <span>Query returned <b>{selectAllBanner.total}</b> columns — showing first {selectAllBanner.shown}. Open <b>Columns</b> to change.</span>
+                <button onClick={() => setSelectAllBanner(null)} className="ml-auto text-muted-foreground hover:text-foreground"><X className="h-3.5 w-3.5" /></button>
+              </div>
+            )}
+            {status === "running" && received >= LARGE_ROW_THRESHOLD && !largeResultAck && (
+              <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+                <AlertTriangle className="h-3.5 w-3.5" />
+                <span>Large result — {received.toLocaleString()}+ rows. Consider cancelling and adding a filter or LIMIT.</span>
+                <Button size="sm" variant="outline" className="ml-auto h-6 text-[11px]" onClick={() => setLargeResultAck(true)}>Continue</Button>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Results toolbar */}
         <div className="flex items-center justify-between border-b border-border bg-background px-4 py-2 text-xs">
           <div className="flex items-center gap-3">
             <span className="font-semibold">Results</span>
-            {isStale && (
+            {isStale && status !== "running" && (
               <span className="flex items-center gap-1 text-[11px] text-primary">
                 <Loader2 className="h-3 w-3 animate-spin" /> Processing…
               </span>
@@ -995,20 +1146,17 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
             </Popover>
           </div>
           <div className="flex items-center gap-2 text-muted-foreground">
-            <span>Show</span>
-            <Select value={String(pageSize)} onValueChange={(v) => { setPageSize(Number(v)); setPage(1); }}>
-              <SelectTrigger className="h-7 w-[80px] text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>{[25, 50, 100, 250, 500].map((n) => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}</SelectContent>
-            </Select>
-            <span>rows</span>
+            {resultRows.length > 0 && (
+              <span className="text-[11px]">{filteredRows.length.toLocaleString()} row(s)</span>
+            )}
           </div>
         </div>
 
         {/* Results table */}
-        <div className="flex-1 overflow-auto">
+        <div ref={gridScrollRef} className="flex-1 overflow-auto">
           {resultRows.length === 0 ? (
             <div className="flex h-full items-center justify-center p-10 text-center text-sm text-muted-foreground">
-              No results yet — build conditions and click "Run Query".
+              {status === "running" ? "Loading…" : "No results yet — build conditions and click \"Run Query\"."}
             </div>
           ) : (
             <table className="w-full border-collapse text-xs" style={{ tableLayout: "fixed" }}>
@@ -1023,23 +1171,26 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
                         <button className="flex-1 text-left" onClick={() => { if (sortKey === c) setSortDir(d=>d==="asc"?"desc":"asc"); else { setSortKey(c); setSortDir("asc"); } }}>{c}</button>
                         <Popover open={filterOpen===c} onOpenChange={(v)=>setFilterOpen(v?c:null)}>
                           <PopoverTrigger asChild><button className="text-muted-foreground hover:text-primary">▼</button></PopoverTrigger>
-                          <PopoverContent className="w-48 p-2">
+                          <PopoverContent className="w-56 p-2">
                             <div className="max-h-60 overflow-auto">
-                              {(columnValuesCache[c] ?? []).map(v => {
+                              {filterOpen === c && openFilterValues.values.map((v) => {
                                 const checked = columnFilters[c]?.has(v) ?? true;
                                 return (
                                   <label key={v} className="flex gap-2 text-xs">
                                     <Checkbox checked={checked} onCheckedChange={(x) => {
-                                      setColumnFilters(prev => {
-                                        const next = new Set(prev[c] ?? (columnValuesCache[c] ?? []));
+                                      setColumnFilters((prev) => {
+                                        const next = new Set(prev[c] ?? openFilterValues.values);
                                         if (x) next.add(v); else next.delete(v);
                                         return { ...prev, [c]: next };
                                       });
                                     }} />
-                                    <span>{v}</span>
+                                    <span className="truncate">{v || <em className="text-muted-foreground">(empty)</em>}</span>
                                   </label>
                                 );
                               })}
+                              {filterOpen === c && openFilterValues.capped && (
+                                <div className="mt-1 text-[10px] text-muted-foreground">Showing first {DISTINCT_CAP} distinct values.</div>
+                              )}
                             </div>
                             <Button size="sm" className="mt-2 w-full" onClick={() => setFilterOpen(null)}>Apply</Button>
                           </PopoverContent>
@@ -1051,21 +1202,41 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
                 </tr>
               </thead>
               <tbody>
-                {isGrouped
-                  ? renderNodes(groupedTree, 0, visibleCols)
-                  : pageRows.map((r, i) => (
-                      <tr key={i} className="border-b border-border/50 hover:bg-accent/30">
-                        {visibleCols.map((c) => {
-                          const fmt = styleForCell(c, r, formatRules);
-                          return (
-                            <td key={c} style={{ width: colWidths[c] ?? 160, ...fmt.style }}
-                              className={`px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis ${fmt.bold ? "font-bold" : ""}`}>
-                              {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
+                {isGrouped ? (
+                  renderNodes(groupedTree, 0, visibleCols)
+                ) : (() => {
+                  const virtualRows = rowVirtualizer.getVirtualItems();
+                  const totalSize = rowVirtualizer.getTotalSize();
+                  const paddingTop = virtualRows.length ? virtualRows[0].start : 0;
+                  const paddingBottom = virtualRows.length ? totalSize - virtualRows[virtualRows.length - 1].end : 0;
+                  return (
+                    <>
+                      {paddingTop > 0 && (
+                        <tr style={{ height: paddingTop }} aria-hidden><td colSpan={visibleCols.length} /></tr>
+                      )}
+                      {virtualRows.map((vi) => {
+                        const r = filteredRows[vi.index];
+                        if (!r) return null;
+                        return (
+                          <tr key={vi.key} data-index={vi.index} style={{ height: ROW_HEIGHT }} className="border-b border-border/50 hover:bg-accent/30">
+                            {visibleCols.map((c) => {
+                              const fmt = styleForCell(c, r, formatRules);
+                              return (
+                                <td key={c} style={{ width: colWidths[c] ?? 160, ...fmt.style }}
+                                  className={`px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis ${fmt.bold ? "font-bold" : ""}`}>
+                                  {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
+                      {paddingBottom > 0 && (
+                        <tr style={{ height: paddingBottom }} aria-hidden><td colSpan={visibleCols.length} /></tr>
+                      )}
+                    </>
+                  );
+                })()}
               </tbody>
               {hasSummaries && (
                 <tfoot className="sticky bottom-0 z-10 bg-card/95 backdrop-blur">
@@ -1089,19 +1260,15 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
         {resultRows.length > 0 && (
           <div className="flex items-center justify-between border-t border-border bg-card/30 px-4 py-2 text-xs">
             <span className="text-muted-foreground">
-              Total rows: {resultRows.length}
+              Showing <b>{filteredRows.length.toLocaleString()}</b> of {resultRows.length.toLocaleString()} row(s)
+              {queryDurationMs != null && <> · {queryDurationMs} ms</>}
               {isGrouped && <> · Grouped by {groupBy.join(" → ")}</>}
+              {status === "cancelled" && <> · <span className="text-amber-500">cancelled</span></>}
             </span>
-            {!isGrouped && (
-              <div className="flex items-center gap-1">
-                <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>‹</Button>
-                <span className="px-2">{page} / {totalPages}</span>
-                <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>›</Button>
-              </div>
-            )}
           </div>
         )}
       </main>
+
 
       {/* Load dialog */}
       <Dialog open={loadOpen} onOpenChange={setLoadOpen}>
