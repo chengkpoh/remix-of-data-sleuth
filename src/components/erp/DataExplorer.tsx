@@ -869,7 +869,7 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
         </div>
 
         {/* Streaming banners */}
-        {(status === "running" || selectAllBanner || (received >= LARGE_ROW_THRESHOLD && !largeResultAck && status === "running")) && (
+        {(status === "running" || selectAllBanner) && (
           <div className="border-b border-border bg-muted/30 px-4 py-1.5 text-[11px] space-y-1">
             {status === "running" && (
               <div className="flex items-center gap-2">
