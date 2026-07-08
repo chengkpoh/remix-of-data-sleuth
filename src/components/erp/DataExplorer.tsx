@@ -1156,10 +1156,10 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
         </div>
 
         {/* Results table */}
-        <div className="flex-1 overflow-auto">
+        <div ref={gridScrollRef} className="flex-1 overflow-auto">
           {resultRows.length === 0 ? (
             <div className="flex h-full items-center justify-center p-10 text-center text-sm text-muted-foreground">
-              No results yet — build conditions and click "Run Query".
+              {status === "running" ? "Loading…" : "No results yet — build conditions and click \"Run Query\"."}
             </div>
           ) : (
             <table className="w-full border-collapse text-xs" style={{ tableLayout: "fixed" }}>
@@ -1197,7 +1197,6 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
                             </div>
                             <Button size="sm" className="mt-2 w-full" onClick={() => setFilterOpen(null)}>Apply</Button>
                           </PopoverContent>
-
                         </Popover>
                       </div>
                       <span onMouseDown={startResize(c)} className="absolute right-0 top-0 h-full w-1 cursor-col-resize hover:bg-primary/40" />
@@ -1206,21 +1205,41 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
                 </tr>
               </thead>
               <tbody>
-                {isGrouped
-                  ? renderNodes(groupedTree, 0, visibleCols)
-                  : pageRows.map((r, i) => (
-                      <tr key={i} className="border-b border-border/50 hover:bg-accent/30">
-                        {visibleCols.map((c) => {
-                          const fmt = styleForCell(c, r, formatRules);
-                          return (
-                            <td key={c} style={{ width: colWidths[c] ?? 160, ...fmt.style }}
-                              className={`px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis ${fmt.bold ? "font-bold" : ""}`}>
-                              {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
+                {isGrouped ? (
+                  renderNodes(groupedTree, 0, visibleCols)
+                ) : (() => {
+                  const virtualRows = rowVirtualizer.getVirtualItems();
+                  const totalSize = rowVirtualizer.getTotalSize();
+                  const paddingTop = virtualRows.length ? virtualRows[0].start : 0;
+                  const paddingBottom = virtualRows.length ? totalSize - virtualRows[virtualRows.length - 1].end : 0;
+                  return (
+                    <>
+                      {paddingTop > 0 && (
+                        <tr style={{ height: paddingTop }} aria-hidden><td colSpan={visibleCols.length} /></tr>
+                      )}
+                      {virtualRows.map((vi) => {
+                        const r = filteredRows[vi.index];
+                        if (!r) return null;
+                        return (
+                          <tr key={vi.key} data-index={vi.index} style={{ height: ROW_HEIGHT }} className="border-b border-border/50 hover:bg-accent/30">
+                            {visibleCols.map((c) => {
+                              const fmt = styleForCell(c, r, formatRules);
+                              return (
+                                <td key={c} style={{ width: colWidths[c] ?? 160, ...fmt.style }}
+                                  className={`px-3 py-1.5 font-mono whitespace-nowrap overflow-hidden text-ellipsis ${fmt.bold ? "font-bold" : ""}`}>
+                                  {r[c] == null ? <span className="text-muted-foreground italic">NULL</span> : String(r[c])}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
+                      {paddingBottom > 0 && (
+                        <tr style={{ height: paddingBottom }} aria-hidden><td colSpan={visibleCols.length} /></tr>
+                      )}
+                    </>
+                  );
+                })()}
               </tbody>
               {hasSummaries && (
                 <tfoot className="sticky bottom-0 z-10 bg-card/95 backdrop-blur">
@@ -1244,19 +1263,15 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
         {resultRows.length > 0 && (
           <div className="flex items-center justify-between border-t border-border bg-card/30 px-4 py-2 text-xs">
             <span className="text-muted-foreground">
-              Total rows: {resultRows.length}
+              Showing <b>{filteredRows.length.toLocaleString()}</b> of {resultRows.length.toLocaleString()} row(s)
+              {queryDurationMs != null && <> · {queryDurationMs} ms</>}
               {isGrouped && <> · Grouped by {groupBy.join(" → ")}</>}
+              {status === "cancelled" && <> · <span className="text-amber-500">cancelled</span></>}
             </span>
-            {!isGrouped && (
-              <div className="flex items-center gap-1">
-                <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>‹</Button>
-                <span className="px-2">{page} / {totalPages}</span>
-                <Button variant="outline" size="sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>›</Button>
-              </div>
-            )}
           </div>
         )}
       </main>
+
 
       {/* Load dialog */}
       <Dialog open={loadOpen} onOpenChange={setLoadOpen}>
