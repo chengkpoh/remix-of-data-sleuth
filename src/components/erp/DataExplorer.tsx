@@ -73,6 +73,28 @@ export function DataExplorer({ schema }: { schema: SchemaSnapshot; dark: boolean
   const dragColRef = useRef<string | null>(null);
   const resizeRef = useRef<{ col: string; startX: number; startW: number } | null>(null);
 
+  // Streaming state — replaces the old one-shot `running` flow.
+  type QueryStatus = "idle" | "running" | "done" | "error" | "cancelled";
+  const [status, setStatus] = useState<QueryStatus>("idle");
+  const [received, setReceived] = useState(0);
+  const [queryDurationMs, setQueryDurationMs] = useState<number | null>(null);
+  const querySourceRef = useRef<QuerySource | null>(null);
+  if (querySourceRef.current === null) querySourceRef.current = getDefaultQuerySource();
+  const cancelRef = useRef<null | (() => void)>(null);
+  const rowsBufRef = useRef<Record<string, unknown>[]>([]);
+  const flushTimerRef = useRef<number | null>(null);
+
+  // SELECT * safeguards
+  const AUTO_HIDE_COL_THRESHOLD = 25;
+  const AUTO_SHOW_COL_COUNT = 20;
+  const LARGE_ROW_THRESHOLD = 25000;
+  const [selectAllBanner, setSelectAllBanner] = useState<{ total: number; shown: number } | null>(null);
+  const [largeResultAck, setLargeResultAck] = useState(false);
+
+  // Virtualization
+  const gridScrollRef = useRef<HTMLDivElement | null>(null);
+  const ROW_HEIGHT = 28;
+
   const [loadOpen, setLoadOpen] = useState(false);
   const [savedList, setSavedList] = useState<SavedQuery[]>([]);
   const [showImport, setShowImport] = useState(false);
